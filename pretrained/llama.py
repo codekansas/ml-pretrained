@@ -394,6 +394,7 @@ class LlamaPredictor:
         else:
             prompt_tokens = torch.tensor(self.tokenizer.encode(prompt, bos=True, eos=False))
         prompt_tokens = self.device.tensor_to(prompt_tokens)
+        return prompt_tokens
 
     @torch.inference_mode()
     def generate_for_tokens(
