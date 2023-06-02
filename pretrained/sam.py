@@ -14,6 +14,12 @@
     predictions, _, _ = predictor.predict()
     single_mask = predictions[0]  # Same shape as the original image.
 
+Alternatively, you can run the script directly on an image:
+
+.. code-block:: bash
+
+    python -m pretrained.sam ViT-B /path/to/image.jpg
+
 The choices for the model key are:
 
 - ``ViT-H``: ViT with 32 layers and 16 attention heads.
@@ -1552,13 +1558,18 @@ def pretrained_sam(key: PretrainedSamSize, *, skip_weights: bool = False) -> Sam
 def test_pretrained_model() -> None:
     parser = argparse.ArgumentParser(description="Tests a pretrained SAM model")
     parser.add_argument("key", type=str, choices=get_args(PretrainedSamSize))
+    parser.add_argument("image_path", type=str, nargs="?", default=None)
+    parser.add_argument("-o", "--output-path", type=str, default=None)
     args = parser.parse_args()
 
     configure_logging()
 
     # Gets an image of a peach from Wikipedia.
-    peach_url = "https://upload.wikimedia.org/wikipedia/commons/9/9e/Autumn_Red_peaches.jpg"
-    img_path = ensure_downloaded(peach_url, "peach.jpg", is_tmp=True)
+    if args.image_path is None:
+        peach_url = "https://upload.wikimedia.org/wikipedia/commons/9/9e/Autumn_Red_peaches.jpg"
+        img_path = ensure_downloaded(peach_url, "peach.jpg", is_tmp=True)
+    else:
+        img_path = Path(args.image_path)
 
     model = pretrained_sam(cast(PretrainedSamSize, args.key))
     predictor = model.predictor()
@@ -1574,7 +1585,10 @@ def test_pretrained_model() -> None:
     mask.putalpha(128)
     peach_img.paste(mask, (0, 0), mask)
 
-    peach_img.show()
+    if args.output_path is None:
+        peach_img.show()
+    else:
+        peach_img.save(args.output_path)
 
 
 if __name__ == "__main__":

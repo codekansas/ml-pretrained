@@ -1101,6 +1101,7 @@ def pretrained_tacotron2(
     pretrained: bool = True,
     lora_rank: int | None = None,
     device: torch.device | None = None,
+    prenet_dropout: bool = True,
 ) -> Tacotron:
     """Loads the pretrained Tacotron2 model.
 
@@ -1108,6 +1109,7 @@ def pretrained_tacotron2(
         pretrained: Whether to load the pretrained weights.
         lora_rank: The LoRA rank to use, if LoRA is desired.
         device: The device to load the weights onto.
+        prenet_dropout: Whether to use always apply dropout in the PreNet.
 
     Returns:
         The pretrained Tacotron model.
@@ -1116,6 +1118,7 @@ def pretrained_tacotron2(
     config.encoder.lora_rank = lora_rank
     config.decoder.lora_rank = lora_rank
     config.postnet.lora_rank = lora_rank
+    config.decoder.prenet_dropout_always_on = prenet_dropout
 
     if not pretrained:
         return Tacotron(config)
