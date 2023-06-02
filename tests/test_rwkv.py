@@ -11,7 +11,7 @@ matches the batched version.
 import torch
 from torch import Tensor
 
-from ml.models.pretrained.rwkv import get_mask, run_wkv
+from pretrained.rwkv import get_mask, run_wkv
 
 
 def test_wkv() -> None:
