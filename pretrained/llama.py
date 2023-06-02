@@ -559,7 +559,6 @@ def test_worker(
     temperature: float,
     top_p: float,
     pretrained: bool,
-    run_unit_test: bool,
 ) -> None:
     model = pretrained_llama(key) if pretrained else empty_llama(key)
     predictor = model.predictor()
@@ -567,9 +566,6 @@ def test_worker(
     # Setting the seed across all processes to make sure that the weights
     # initialize to the same values (needed to make the test pass).
     torch.manual_seed(1337)
-
-    if run_unit_test and not predictor.unit_test_forward_matches_infer(prompt):
-        raise RuntimeError("Unit test failed!")
 
     def generate_for_prompt(prompt: str) -> None:
         print(prompt, end="")
@@ -611,13 +607,12 @@ def test_pretrained_model() -> None:
     parser.add_argument("-t", "--temperature", type=float, default=0.8)
     parser.add_argument("-p", "--top-p", type=float, default=0.95)
     parser.add_argument("-e", "--empty", default=False, action="store_true")
-    parser.add_argument("-s", "--unit-test", default=False, action="store_true")
     args = parser.parse_args()
 
     configure_logging()
 
     key = args.key
-    all_args = args.prompt, args.max_gen_len, args.temperature, args.top_p, not args.empty, args.unit_test
+    all_args = args.prompt, args.max_gen_len, args.temperature, args.top_p, not args.empty
     world_size = PRETRAINED_MODEL_SIZES[key].mp_size
 
     launch_subprocesses(
