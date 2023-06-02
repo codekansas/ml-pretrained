@@ -17,6 +17,14 @@ help:
 %: Makefile
 	@$(SPHINXBUILD) -M $@ "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
+remove-pretrained:
+	rm -rf pretrained*.rst
+
 clean-all: clean remove-pretrained
 
-.PHONY: help Makefile clean-all
+generate-rst:
+	python generate_rst.py
+
+full-html: generate-rst html
+
+.PHONY: help Makefile remove-pretrained clean-all generate-rst full-html

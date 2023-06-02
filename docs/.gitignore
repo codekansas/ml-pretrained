@@ -1,4 +1,5 @@
 # .gitignore
 
 _build
-ml*.rst
+index.rst
+pretrained*.rst
