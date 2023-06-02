@@ -388,6 +388,30 @@ class LlamaPredictor:
         self.tokenizer = tokenizer
         self.model = llama_model
 
+    def tokenize(self, prompt: str | None) -> Tensor:
+        if prompt is None:
+            prompt_tokens = torch.full((1, 1), self.tokenizer.bos_id, dtype=torch.long)
+        else:
+            prompt_tokens = torch.tensor(self.tokenizer.encode(prompt, bos=True, eos=False))
+        prompt_tokens = self.device.tensor_to(prompt_tokens)
+
+    @torch.inference_mode()
+    def generate_for_tokens(
+        self,
+        prompt_tokens: Tensor,
+        max_gen_len: int = 256,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ) -> Iterator[str]:
+        for pred_token, _ in self.model.infer(
+            prompt_tokens,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+            eos_id=self.tokenizer.eos_id,
+        ):
+            yield self.tokenizer.decode(pred_token.tolist())[0]
+
     @torch.inference_mode()
     def generate(
         self,
@@ -396,19 +420,13 @@ class LlamaPredictor:
         temperature: float = 0.8,
         top_p: float = 0.95,
     ) -> Iterator[str]:
-        if prompt is None:
-            prompt_tokens = torch.full((1, 1), self.tokenizer.bos_id, dtype=torch.long)
-        else:
-            prompt_tokens = torch.tensor(self.tokenizer.encode(prompt, bos=True, eos=False))
-
-        for pred_token, _ in self.model.infer(
-            self.device.tensor_to(prompt_tokens),
+        prompt_tokens = self.tokenize(prompt)
+        yield from self.generate_for_tokens(
+            prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
             top_p=top_p,
-            eos_id=self.tokenizer.eos_id,
-        ):
-            yield self.tokenizer.decode(pred_token.tolist())[0]
+        )
 
     @torch.no_grad()
     def unit_test_forward_matches_infer(self, prompt: str) -> bool:
@@ -540,7 +558,7 @@ def pretrained_llama(key: PretrainedLlamaKey) -> Llama:
 
 def test_worker(
     key: PretrainedLlamaKey,
-    prompt: str,
+    prompt: str | None,
     max_gen_len: int,
     temperature: float,
     top_p: float,
@@ -557,15 +575,25 @@ def test_worker(
     if run_unit_test and not predictor.unit_test_forward_matches_infer(prompt):
         raise RuntimeError("Unit test failed!")
 
-    print(prompt, end="")
-    for token in predictor.generate(
-        prompt=prompt,
-        max_gen_len=max_gen_len,
-        temperature=temperature,
-        top_p=top_p,
-    ):
-        print(token, end="", flush=True)
-    print()
+    def generate_for_prompt(prompt: str) -> None:
+        print(prompt, end="")
+        for token in predictor.generate(
+            prompt=prompt,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        ):
+            print(token, end="", flush=True)
+        print()
+
+    if prompt:
+        generate_for_prompt(prompt)
+
+    else:
+        prompt = input("Prompt: ")
+        while prompt:
+            generate_for_prompt(prompt)
+            prompt = input("Prompt: ")
 
 
 def setup() -> None:
