@@ -381,10 +381,6 @@ def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None)
     with Timer("building model skeleton", spinner=True), init_empty_weights():
         model = Rwkv(model_args.emb_dim, 50277, model_args.num_layers)
 
-    # Logs model summary.
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info("Model %s has %s parameters", key, f"{total_params:,}")
-
     # Build the transformer and loads the checkpoint.
     with Timer("loading state dict", spinner=True):
         model._apply(meta_to_empty_func(device.get_device(), torch.half))
@@ -428,7 +424,6 @@ def test_rwkv_adhoc() -> None:
         while prompt:
             generate_for_prompt(prompt)
             prompt = input("Prompt: ")
-
 
 
 if __name__ == "__main__":

@@ -16,11 +16,17 @@
 
 ```bash
 $ pip install ml-pretrained
-$ pip install tokenizers  # Required for RWKV model.
+# Try out the RWKV model. This requires the `tokenizers` package.
+$ pip install tokenizers
 $ python -m pretrained.rwkv 430m 'Scientists recently discovered an island populated entirely by cats. To their astonishment, none of the cats were hungry. Upon further investigation,'
 Scientists recently discovered an island populated entirely by cats. To their astonishment, none of the cats were hungry. Upon further investigation, in fact, researchers discovered that they were members of an ancestral, living species. When this research was published in 2009 in the journal Current Biology, there was widespread praise for their research.
 
 So what do we make of the current understanding of what happens to these amazing creatures when they no longer exist on a cold planet? Much of the literature on the matter seems to conclude that there’s no hope of coming to grips with this question, that everything we know about this species, or even any of the non-human species that may be out there in space, is simply a human’s or animal’s invention.
+# Try out the Tacotron2 model. This requires the `sounddevice`, `inflect` and `ftfy` packages.
+$ pip install sounddevice inflect ftfy
+$ python -m pretrained.tacotron2 'Scientists recently discovered an island populated entirely by cats. To their astonishment, none of the cats were hungry.'
+# Chain these together.
+$ python -m pretrained.tacotron2 "$(python -m pretrained.rwkv 430m 'Scientists recently discovered an island populated entirely by cats. To their surprise,' --tsz 64)"
 ```
 
 ## What is this?

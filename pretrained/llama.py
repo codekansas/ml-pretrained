@@ -495,10 +495,6 @@ def empty_llama(key: PretrainedLlamaKey) -> Llama:
     with Timer("building empty model", spinner=True), init_empty_weights():
         model = Llama(model_args, tokenizer)
 
-    # Logs model summary.
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info("Model %s has %s parameters", key, f"{total_params:,}")
-
     with Timer("moving model to device", spinner=True):
         device = AutoDevice.detect_device().get_device()
         model._apply(meta_to_empty_func(device, torch.half))
