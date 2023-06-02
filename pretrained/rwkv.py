@@ -381,10 +381,6 @@ def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None)
     with Timer("building model skeleton", spinner=True), init_empty_weights():
         model = Rwkv(model_args.emb_dim, 50277, model_args.num_layers)
 
-    # Logs model summary.
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info("Model %s has %s parameters", key, f"{total_params:,}")
-
     # Build the transformer and loads the checkpoint.
     with Timer("loading state dict", spinner=True):
         model._apply(meta_to_empty_func(device.get_device(), torch.half))
@@ -396,7 +392,7 @@ def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None)
 def test_rwkv_adhoc() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("size", type=str, choices=get_args(PretrainedRwkvKey))
-    parser.add_argument("prompt", type=str)
+    parser.add_argument("prompt", type=str, nargs="?")
     parser.add_argument("-t", "--tsz", type=int, default=128)
     parser.add_argument("-m", "--temperature", type=float, default=1.0)
     parser.add_argument("-p", "--top-p", type=float, default=0.85)
@@ -408,16 +404,26 @@ def test_rwkv_adhoc() -> None:
     model = pretrained_rwkv(args.size)
     predictor = model.predictor()
 
-    print(args.prompt, end="")
-    for token in predictor.generate(
-        args.prompt,
-        max_len=args.tsz,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        end_strs=args.end_tok,
-    ):
-        print(token, end="", flush=True)
-    print()
+    def generate_for_prompt(prompt: str) -> None:
+        print(prompt, end="")
+        for token in predictor.generate(
+            prompt,
+            max_len=args.tsz,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            end_strs=args.end_tok,
+        ):
+            print(token, end="", flush=True)
+        print()
+
+    if args.prompt:
+        generate_for_prompt(args.prompt)
+
+    else:
+        prompt = input("Prompt: ")
+        while prompt:
+            generate_for_prompt(prompt)
+            prompt = input("Prompt: ")
 
 
 if __name__ == "__main__":

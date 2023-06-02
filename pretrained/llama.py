@@ -388,6 +388,31 @@ class LlamaPredictor:
         self.tokenizer = tokenizer
         self.model = llama_model
 
+    def tokenize(self, prompt: str | None) -> Tensor:
+        if prompt is None:
+            prompt_tokens = torch.full((1, 1), self.tokenizer.bos_id, dtype=torch.long)
+        else:
+            prompt_tokens = torch.tensor(self.tokenizer.encode(prompt, bos=True, eos=False))
+        prompt_tokens = self.device.tensor_to(prompt_tokens)
+        return prompt_tokens
+
+    @torch.inference_mode()
+    def generate_for_tokens(
+        self,
+        prompt_tokens: Tensor,
+        max_gen_len: int = 256,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ) -> Iterator[str]:
+        for pred_token, _ in self.model.infer(
+            prompt_tokens,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+            eos_id=self.tokenizer.eos_id,
+        ):
+            yield self.tokenizer.decode(pred_token.tolist())[0]
+
     @torch.inference_mode()
     def generate(
         self,
@@ -396,19 +421,13 @@ class LlamaPredictor:
         temperature: float = 0.8,
         top_p: float = 0.95,
     ) -> Iterator[str]:
-        if prompt is None:
-            prompt_tokens = torch.full((1, 1), self.tokenizer.bos_id, dtype=torch.long)
-        else:
-            prompt_tokens = torch.tensor(self.tokenizer.encode(prompt, bos=True, eos=False))
-
-        for pred_token, _ in self.model.infer(
-            self.device.tensor_to(prompt_tokens),
+        prompt_tokens = self.tokenize(prompt)
+        yield from self.generate_for_tokens(
+            prompt_tokens,
             max_gen_len=max_gen_len,
             temperature=temperature,
             top_p=top_p,
-            eos_id=self.tokenizer.eos_id,
-        ):
-            yield self.tokenizer.decode(pred_token.tolist())[0]
+        )
 
     @torch.no_grad()
     def unit_test_forward_matches_infer(self, prompt: str) -> bool:
@@ -477,10 +496,6 @@ def empty_llama(key: PretrainedLlamaKey) -> Llama:
     with Timer("building empty model", spinner=True), init_empty_weights():
         model = Llama(model_args, tokenizer)
 
-    # Logs model summary.
-    total_params = sum(p.numel() for p in model.parameters())
-    logger.info("Model %s has %s parameters", key, f"{total_params:,}")
-
     with Timer("moving model to device", spinner=True):
         device = AutoDevice.detect_device().get_device()
         model._apply(meta_to_empty_func(device, torch.half))
@@ -540,12 +555,11 @@ def pretrained_llama(key: PretrainedLlamaKey) -> Llama:
 
 def test_worker(
     key: PretrainedLlamaKey,
-    prompt: str,
+    prompt: str | None,
     max_gen_len: int,
     temperature: float,
     top_p: float,
     pretrained: bool,
-    run_unit_test: bool,
 ) -> None:
     model = pretrained_llama(key) if pretrained else empty_llama(key)
     predictor = model.predictor()
@@ -554,18 +568,25 @@ def test_worker(
     # initialize to the same values (needed to make the test pass).
     torch.manual_seed(1337)
 
-    if run_unit_test and not predictor.unit_test_forward_matches_infer(prompt):
-        raise RuntimeError("Unit test failed!")
+    def generate_for_prompt(prompt: str) -> None:
+        print(prompt, end="")
+        for token in predictor.generate(
+            prompt=prompt,
+            max_gen_len=max_gen_len,
+            temperature=temperature,
+            top_p=top_p,
+        ):
+            print(token, end="", flush=True)
+        print()
 
-    print(prompt, end="")
-    for token in predictor.generate(
-        prompt=prompt,
-        max_gen_len=max_gen_len,
-        temperature=temperature,
-        top_p=top_p,
-    ):
-        print(token, end="", flush=True)
-    print()
+    if prompt:
+        generate_for_prompt(prompt)
+
+    else:
+        prompt = input("Prompt: ")
+        while prompt:
+            generate_for_prompt(prompt)
+            prompt = input("Prompt: ")
 
 
 def setup() -> None:
@@ -587,13 +608,12 @@ def test_pretrained_model() -> None:
     parser.add_argument("-t", "--temperature", type=float, default=0.8)
     parser.add_argument("-p", "--top-p", type=float, default=0.95)
     parser.add_argument("-e", "--empty", default=False, action="store_true")
-    parser.add_argument("-s", "--unit-test", default=False, action="store_true")
     args = parser.parse_args()
 
     configure_logging()
 
     key = args.key
-    all_args = args.prompt, args.max_gen_len, args.temperature, args.top_p, not args.empty, args.unit_test
+    all_args = args.prompt, args.max_gen_len, args.temperature, args.top_p, not args.empty
     world_size = PRETRAINED_MODEL_SIZES[key].mp_size
 
     launch_subprocesses(
