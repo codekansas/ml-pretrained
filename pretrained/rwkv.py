@@ -311,6 +311,9 @@ class Rwkv(nn.Module):
         if lora_rank is not None:
             self.ln_out.requires_grad_(False)
 
+    def tensor_to(self, x: Tensor) -> Tensor:
+        return x.to(self.head.weight)
+
     def forward(self, tokens: Tensor, states_in: list[State] | None = None) -> tuple[Tensor, list[State]]:
         x = self.emb(tokens)
         states_out: list[State] = []
@@ -338,18 +341,14 @@ def get_tokenizer() -> Any:
 
 
 class RwkvPredictor:
-    def __init__(self, rwkv_model: Rwkv, *, device: BaseDevice | None = None) -> None:
+    def __init__(self, rwkv_model: Rwkv) -> None:
         """Provides an API for sampling from the RWKV model.
 
         Args:
             rwkv_model: The RWKV model to use for sampling.
-            device: The device to use for sampling. If None, the device will be
-                automatically detected.
         """
         super().__init__()
 
-        self.device = AutoDevice.detect_device() if device is None else device
-        self.device.module_to(rwkv_model)
         self.tokenizer = get_tokenizer()
         self.model = rwkv_model
 
@@ -376,7 +375,7 @@ class RwkvPredictor:
     ) -> Iterator[str]:
         tokens = self.tokenizer.encode(prompt).ids
 
-        probs, state = self.model(self.device.tensor_to(torch.tensor([tokens])))
+        probs, state = self.model(self.model.tensor_to(torch.tensor([tokens])))
         probs = probs[:, -1:]
 
         end_toks_set = set() if end_toks is None else set(end_toks)
@@ -391,7 +390,7 @@ class RwkvPredictor:
             if any(e in token_str for e in end_strs_set):
                 break
             if i < max_len - 1:
-                probs, state = self.model(self.device.tensor_to(torch.tensor([[token]])), state)
+                probs, state = self.model(self.model.tensor_to(torch.tensor([[token]])), state)
 
 
 def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None, lora_rank: int | None = None) -> Rwkv:
