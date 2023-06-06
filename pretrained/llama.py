@@ -127,16 +127,40 @@ def apply_rotary_emb(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor,
 
 
 class Attention(nn.Module):
-    def __init__(self, args: ModelArgs) -> None:
+    def __init__(self, args: ModelArgs, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.n_local_heads = args.n_heads // parallel_group_info().mp.world_size
         self.head_dim = args.dim // args.n_heads
 
-        self.wq = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, gather_output=False)
-        self.wk = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, gather_output=False)
-        self.wv = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, gather_output=False)
-        self.wo = RowParallelLinear(args.n_heads * self.head_dim, args.dim, bias=False, input_is_parallel=True)
+        self.wq = ColumnParallelLinear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False,
+            gather_output=False,
+            lora_rank=lora_rank,
+        )
+        self.wk = ColumnParallelLinear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False,
+            gather_output=False,
+            lora_rank=lora_rank,
+        )
+        self.wv = ColumnParallelLinear(
+            args.dim,
+            args.n_heads * self.head_dim,
+            bias=False,
+            gather_output=False,
+            lora_rank=lora_rank,
+        )
+        self.wo = RowParallelLinear(
+            args.n_heads * self.head_dim,
+            args.dim,
+            bias=False,
+            input_is_parallel=True,
+            lora_rank=lora_rank,
+        )
 
     def forward(
         self,
@@ -178,32 +202,42 @@ class FeedForward(nn.Module):
         dim: int,
         hidden_dim: int,
         multiple_of: int,
+        lora_rank: int | None = None,
     ) -> None:
         super().__init__()
 
         hidden_dim = int(2 * hidden_dim / 3)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False)
-        self.w2 = RowParallelLinear(hidden_dim, dim, bias=False, input_is_parallel=True)
-        self.w3 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False)
+        self.w1 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False, lora_rank=lora_rank)
+        self.w2 = RowParallelLinear(hidden_dim, dim, bias=False, input_is_parallel=True, lora_rank=lora_rank)
+        self.w3 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False, lora_rank=lora_rank)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, layer_id: int, args: ModelArgs) -> None:
+    def __init__(self, layer_id: int, args: ModelArgs, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
-        self.attention = Attention(args)
-        self.feed_forward = FeedForward(dim=args.dim, hidden_dim=4 * args.dim, multiple_of=args.multiple_of)
+        self.attention = Attention(args, lora_rank=lora_rank)
+        self.feed_forward = FeedForward(
+            dim=args.dim,
+            hidden_dim=4 * args.dim,
+            multiple_of=args.multiple_of,
+            lora_rank=lora_rank,
+        )
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+
+        if lora_rank is not None:
+            self.attention_norm.requires_grad_(False)
+            self.ffn_norm.requires_grad_(False)
 
     def forward(
         self,
@@ -256,7 +290,7 @@ class Tokenizer:
 class Llama(nn.Module):
     freqs_cis: Tensor
 
-    def __init__(self, params: ModelArgs, tokenizer: Tokenizer | None = None) -> None:
+    def __init__(self, params: ModelArgs, tokenizer: Tokenizer | None = None, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.params = params
@@ -265,17 +299,21 @@ class Llama(nn.Module):
 
         self.tokenizer = tokenizer
 
-        self.tok_embeddings = ParallelEmbedding(params.vocab_size, params.dim)
+        self.tok_embeddings = ParallelEmbedding(params.vocab_size, params.dim, lora_rank=lora_rank)
 
         self.layers = nn.ModuleList()
         for layer_id in range(params.n_layers):
-            self.layers.append(TransformerBlock(layer_id, params))
+            self.layers.append(TransformerBlock(layer_id, params, lora_rank=lora_rank))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
-        self.output = ColumnParallelLinear(params.dim, params.vocab_size, bias=False)
+        self.output = ColumnParallelLinear(params.dim, params.vocab_size, bias=False, lora_rank=lora_rank)
 
         freqs_cis = precompute_freqs_cis(self.params.dim // self.params.n_heads, self.params.max_seq_len * 2)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
+
+        if lora_rank is not None:
+            self.tok_embeddings.requires_grad_(False)
+            self.norm.requires_grad_(False)
 
     @torch.no_grad()
     def get_mask(self, seqlen: int, ref_tensor: Tensor) -> Tensor | None:
@@ -510,7 +548,7 @@ def empty_llama(key: PretrainedLlamaKey) -> Llama:
     return model
 
 
-def pretrained_llama(key: PretrainedLlamaKey) -> Llama:
+def pretrained_llama(key: PretrainedLlamaKey, *, lora_rank: int | None = None) -> Llama:
     rank, world_size = parallel_group_info().mp.rank, parallel_group_info().mp.world_size
 
     ckpt_dir, tokenizer_path = get_ckpt_and_tokenizer_path(key)
@@ -539,7 +577,7 @@ def pretrained_llama(key: PretrainedLlamaKey) -> Llama:
 
     # Builds the model with empty weights.
     with Timer("building model skeleton", spinner=True), init_empty_weights():
-        model = Llama(model_args, tokenizer)
+        model = Llama(model_args, tokenizer, lora_rank=lora_rank)
 
     # Logs model summary.
     total_params = sum(p.numel() for p in model.parameters())
