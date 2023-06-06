@@ -280,7 +280,8 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(emb_dim)
 
         if lora_rank is not None:
-            self.ln0.requires_grad_(False)
+            if self.ln0 is not None:
+                self.ln0.requires_grad_(False)
             self.ln1.requires_grad_(False)
             self.ln2.requires_grad_(False)
 
