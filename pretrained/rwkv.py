@@ -41,6 +41,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
@@ -182,7 +183,7 @@ class Attention(nn.Module):
     init_den: Tensor
     mask: Tensor
 
-    def __init__(self, emb_dim: int, max_tsz: int = 1024) -> None:
+    def __init__(self, emb_dim: int, max_tsz: int = 1024, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.time_decay = nn.Parameter(torch.empty(emb_dim))
@@ -192,10 +193,18 @@ class Attention(nn.Module):
         self.time_mix_v = nn.Parameter(torch.empty(1, 1, emb_dim))
         self.time_mix_r = nn.Parameter(torch.empty(1, 1, emb_dim))
 
-        self.key = nn.Linear(emb_dim, emb_dim, bias=False)
-        self.value = nn.Linear(emb_dim, emb_dim, bias=False)
-        self.receptance = nn.Linear(emb_dim, emb_dim, bias=False)
-        self.output = nn.Linear(emb_dim, emb_dim, bias=False)
+        # Disables updating the time parameters if using LoRA.
+        if lora_rank is not None:
+            self.time_decay.requires_grad_(False)
+            self.time_first.requires_grad_(False)
+            self.time_mix_k.requires_grad_(False)
+            self.time_mix_v.requires_grad_(False)
+            self.time_mix_r.requires_grad_(False)
+
+        self.key = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
+        self.value = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
+        self.receptance = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
+        self.output = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
 
         self.register_buffer("init_x", torch.zeros(1, 1, emb_dim), persistent=False)
         self.register_buffer("init_num", torch.zeros(1, 1, emb_dim), persistent=False)
@@ -229,15 +238,20 @@ class Attention(nn.Module):
 class FeedForward(nn.Module):
     init_state: Tensor
 
-    def __init__(self, emb_dim: int, ffn_dim: int) -> None:
+    def __init__(self, emb_dim: int, ffn_dim: int, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.time_mix_k = nn.Parameter(torch.empty(1, 1, emb_dim))
         self.time_mix_r = nn.Parameter(torch.empty(1, 1, emb_dim))
 
-        self.key = nn.Linear(emb_dim, ffn_dim, bias=False)
-        self.receptance = nn.Linear(emb_dim, emb_dim, bias=False)
-        self.value = nn.Linear(ffn_dim, emb_dim, bias=False)
+        # Disables updating the time parameters if using LoRA.
+        if lora_rank is not None:
+            self.time_mix_k.requires_grad_(False)
+            self.time_mix_r.requires_grad_(False)
+
+        self.key = maybe_lora(nn.Linear(emb_dim, ffn_dim, bias=False), lora_rank)
+        self.receptance = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
+        self.value = maybe_lora(nn.Linear(ffn_dim, emb_dim, bias=False), lora_rank)
 
         self.register_buffer("init_state", torch.zeros(1, 1, emb_dim), persistent=False)
 
@@ -258,15 +272,20 @@ class FeedForward(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, emb_dim: int, pre_norm: bool) -> None:
+    def __init__(self, emb_dim: int, pre_norm: bool, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.ln0 = nn.LayerNorm(emb_dim) if pre_norm else None
         self.ln1 = nn.LayerNorm(emb_dim)
         self.ln2 = nn.LayerNorm(emb_dim)
 
-        self.att = Attention(emb_dim)
-        self.ffn = FeedForward(emb_dim, emb_dim * 4)
+        if lora_rank is not None:
+            self.ln0.requires_grad_(False)
+            self.ln1.requires_grad_(False)
+            self.ln2.requires_grad_(False)
+
+        self.att = Attention(emb_dim, lora_rank=lora_rank)
+        self.ffn = FeedForward(emb_dim, emb_dim * 4, lora_rank=lora_rank)
 
     def forward(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
         if self.ln0 is not None:
@@ -279,13 +298,17 @@ class Block(nn.Module):
 
 
 class Rwkv(nn.Module):
-    def __init__(self, emb_dim: int, num_tokens: int, num_layers: int) -> None:
+    def __init__(self, emb_dim: int, num_tokens: int, num_layers: int, lora_rank: int | None = None) -> None:
         super().__init__()
 
-        self.emb = nn.Embedding(num_tokens, emb_dim)
-        self.blocks = nn.ModuleList([Block(emb_dim, i == 0) for i in range(num_layers)])
+        self.emb = maybe_lora(nn.Embedding(num_tokens, emb_dim), lora_rank)
+        self.blocks = nn.ModuleList([Block(emb_dim, i == 0, lora_rank=lora_rank) for i in range(num_layers)])
         self.ln_out = nn.LayerNorm(emb_dim)
-        self.head = nn.Linear(emb_dim, num_tokens, bias=False)
+        self.head = maybe_lora(nn.Linear(emb_dim, num_tokens, bias=False), lora_rank)
+
+        # Disables updating the layer norm parameters if using LoRA.
+        if lora_rank is not None:
+            self.ln_out.requires_grad_(False)
 
     def forward(self, tokens: Tensor, states_in: list[State] | None = None) -> tuple[Tensor, list[State]]:
         x = self.emb(tokens)
@@ -370,7 +393,7 @@ class RwkvPredictor:
                 probs, state = self.model(self.device.tensor_to(torch.tensor([[token]])), state)
 
 
-def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None) -> Rwkv:
+def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None, lora_rank: int | None = None) -> Rwkv:
     device = AutoDevice.detect_device() if device is None else device
     model_args = PRETRAINED_MODEL_SIZES[key]
     ckpt_path = ensure_downloaded(model_args.url, "rwkv", f"{key}.pth", sha256=model_args.sha256)
@@ -379,7 +402,7 @@ def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None)
         ckpt = torch.load(ckpt_path, map_location="cpu")
 
     with Timer("building model skeleton", spinner=True), init_empty_weights():
-        model = Rwkv(model_args.emb_dim, 50277, model_args.num_layers)
+        model = Rwkv(model_args.emb_dim, 50277, model_args.num_layers, lora_rank=lora_rank)
 
     # Build the transformer and loads the checkpoint.
     with Timer("loading state dict", spinner=True):
