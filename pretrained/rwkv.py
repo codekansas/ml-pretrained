@@ -193,14 +193,6 @@ class Attention(nn.Module):
         self.time_mix_v = nn.Parameter(torch.empty(1, 1, emb_dim))
         self.time_mix_r = nn.Parameter(torch.empty(1, 1, emb_dim))
 
-        # Disables updating the time parameters if using LoRA.
-        if lora_rank is not None:
-            self.time_decay.requires_grad_(False)
-            self.time_first.requires_grad_(False)
-            self.time_mix_k.requires_grad_(False)
-            self.time_mix_v.requires_grad_(False)
-            self.time_mix_r.requires_grad_(False)
-
         self.key = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
         self.value = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
         self.receptance = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
@@ -249,11 +241,6 @@ class FeedForward(nn.Module):
         self.time_mix_k = nn.Parameter(torch.empty(1, 1, emb_dim))
         self.time_mix_r = nn.Parameter(torch.empty(1, 1, emb_dim))
 
-        # Disables updating the time parameters if using LoRA.
-        if lora_rank is not None:
-            self.time_mix_k.requires_grad_(False)
-            self.time_mix_r.requires_grad_(False)
-
         self.key = maybe_lora(nn.Linear(emb_dim, ffn_dim, bias=False), lora_rank)
         self.receptance = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
         self.value = maybe_lora(nn.Linear(ffn_dim, emb_dim, bias=False), lora_rank)
@@ -286,12 +273,6 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(emb_dim)
         self.ln2 = nn.LayerNorm(emb_dim)
 
-        if lora_rank is not None:
-            if self.ln0 is not None:
-                self.ln0.requires_grad_(False)
-            self.ln1.requires_grad_(False)
-            self.ln2.requires_grad_(False)
-
         self.att = Attention(emb_dim, lora_rank=lora_rank)
         self.ffn = FeedForward(emb_dim, emb_dim * 4, lora_rank=lora_rank)
 
@@ -313,10 +294,6 @@ class Rwkv(nn.Module):
         self.blocks = nn.ModuleList([Block(emb_dim, i == 0, lora_rank=lora_rank) for i in range(num_layers)])
         self.ln_out = nn.LayerNorm(emb_dim)
         self.head = maybe_lora(nn.Linear(emb_dim, num_tokens, bias=False), lora_rank)
-
-        # Disables updating the layer norm parameters if using LoRA.
-        if lora_rank is not None:
-            self.ln_out.requires_grad_(False)
 
     def tensor_to(self, x: Tensor) -> Tensor:
         ref_tensor = self.head.weight
