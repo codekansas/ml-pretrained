@@ -34,5 +34,5 @@ setup(
     install_requires=["ml-starter"],
     tests_require=["ml-starter[dev]"],
     extras_require={"dev": ["ml-starter[dev]"], "docs": ["ml-starter[docs]"]},
-    package_data={"ml": ["py.typed"]},
+    package_data={"pretrained": ["py.typed"]},
 )
