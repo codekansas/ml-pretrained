@@ -218,9 +218,14 @@ class Attention(nn.Module):
         return last_x
 
     def forward(self, x: Tensor, state: AttentionState) -> tuple[Tensor, AttentionState]:
-        _, tsz, _ = x.shape
+        bsz, tsz, _ = x.shape
 
-        last_x, last_num, last_den = (self.init_x, self.init_num, self.init_den) if state is None else state
+        if state is None:
+            last_x = self.init_x.repeat(bsz, 1, 1)
+            last_num = self.init_num.repeat(bsz, 1, 1)
+            last_den = self.init_den.repeat(bsz, 1, 1)
+        else:
+            last_x, last_num, last_den = state
         last_x = self.time_shift(last_x, x)
 
         k = self.key(x * self.time_mix_k + last_x * (1 - self.time_mix_k))
@@ -262,7 +267,9 @@ class FeedForward(nn.Module):
         return last_x
 
     def forward(self, x: Tensor, state: FeedForwardState | None = None) -> tuple[Tensor, FeedForwardState]:
-        last_x = self.time_shift(self.init_state if state is None else state, x)
+        bsz = x.shape[0]
+
+        last_x = self.time_shift(self.init_state.repeat(bsz, 1, 1) if state is None else state, x)
 
         k = self.key(x * self.time_mix_k + last_x * (1 - self.time_mix_k))
         r = self.receptance(x * self.time_mix_r + last_x * (1 - self.time_mix_r))
