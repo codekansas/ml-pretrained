@@ -312,7 +312,10 @@ class Rwkv(nn.Module):
             self.ln_out.requires_grad_(False)
 
     def tensor_to(self, x: Tensor) -> Tensor:
-        return x.to(self.head.weight)
+        ref_tensor = self.head.weight
+        if x.is_floating_point():
+            return x.to(ref_tensor)
+        return x.to(ref_tensor.device)
 
     def forward(self, tokens: Tensor, states_in: list[State] | None = None) -> tuple[Tensor, list[State]]:
         x = self.emb(tokens)
