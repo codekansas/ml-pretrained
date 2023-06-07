@@ -324,13 +324,20 @@ class Rwkv(nn.Module):
             return x.to(ref_tensor)
         return x.to(ref_tensor.device)
 
-    def forward(self, tokens: Tensor, states_in: list[State] | None = None) -> tuple[Tensor, list[State]]:
+    def forward(
+        self,
+        tokens: Tensor,
+        states_in: list[State] | None = None,
+        return_logits: bool = False,
+    ) -> tuple[Tensor, list[State]]:
         x = self.emb(tokens)
         states_out: list[State] = []
         for i, block in enumerate(self.blocks):
             x, state_out = block(x, None if states_in is None else states_in[i])
             states_out.append(state_out)
         x = self.head(self.ln_out(x))
+        if return_logits:
+            return x, states_out
         e_x = torch.exp(x - torch.max(x))
         probs = e_x / e_x.sum()
         return probs, states_out
