@@ -381,16 +381,18 @@ class RwkvPredictor:
     @torch.no_grad()
     def generate(
         self,
-        prompt: str,
+        prompt: str | Tensor,
         max_len: int = 256,
         temperature: float = 1.0,
         top_p: float = 0.85,
         end_toks: Sequence[int] | None = None,
         end_strs: Sequence[str] | None = None,
     ) -> Iterator[str]:
-        tokens = self.tokenizer.encode(prompt).ids
+        if isinstance(prompt, str):
+            prompt = torch.tensor([self.tokenizer.encode(prompt).ids])
+        assert prompt.dim() == 2 and prompt.shape[0] == 1
 
-        probs, state = self.model(self.model.tensor_to(torch.tensor([tokens])))
+        probs, state = self.model(self.model.tensor_to(prompt))
         probs = probs[:, -1:]
 
         end_toks_set = set() if end_toks is None else set(end_toks)
