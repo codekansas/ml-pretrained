@@ -44,6 +44,7 @@ from torch import Tensor, nn
 
 from ml.core.config import conf_field
 from ml.core.env import get_model_dir
+from ml.models.lora import maybe_lora
 from ml.models.parallel import ColumnParallelLinear, ParallelEmbedding, RowParallelLinear
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
@@ -133,34 +134,14 @@ class Attention(nn.Module):
         self.n_local_heads = args.n_heads // parallel_group_info().mp.world_size
         self.head_dim = args.dim // args.n_heads
 
-        self.wq = ColumnParallelLinear(
-            args.dim,
-            args.n_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            lora_rank=lora_rank,
-        )
-        self.wk = ColumnParallelLinear(
-            args.dim,
-            args.n_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            lora_rank=lora_rank,
-        )
-        self.wv = ColumnParallelLinear(
-            args.dim,
-            args.n_heads * self.head_dim,
-            bias=False,
-            gather_output=False,
-            lora_rank=lora_rank,
-        )
-        self.wo = RowParallelLinear(
-            args.n_heads * self.head_dim,
-            args.dim,
-            bias=False,
-            input_is_parallel=True,
-            lora_rank=lora_rank,
-        )
+        wq = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, gather_output=False)
+        wk = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, gather_output=False)
+        wv = ColumnParallelLinear(args.dim, args.n_heads * self.head_dim, bias=False, gather_output=False)
+        wo = RowParallelLinear(args.n_heads * self.head_dim, args.dim, bias=False, input_is_parallel=True)
+        self.wq = maybe_lora(wq, lora_rank)
+        self.wk = maybe_lora(wk, lora_rank)
+        self.wv = maybe_lora(wv, lora_rank)
+        self.wo = maybe_lora(wo, lora_rank)
 
     def forward(
         self,
@@ -209,9 +190,12 @@ class FeedForward(nn.Module):
         hidden_dim = int(2 * hidden_dim / 3)
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
-        self.w1 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False, lora_rank=lora_rank)
-        self.w2 = RowParallelLinear(hidden_dim, dim, bias=False, input_is_parallel=True, lora_rank=lora_rank)
-        self.w3 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False, lora_rank=lora_rank)
+        w1 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False)
+        w2 = RowParallelLinear(hidden_dim, dim, bias=False, input_is_parallel=True)
+        w3 = ColumnParallelLinear(dim, hidden_dim, bias=False, gather_output=False)
+        self.w1 = maybe_lora(w1, lora_rank)
+        self.w2 = maybe_lora(w2, lora_rank)
+        self.w3 = maybe_lora(w3, lora_rank)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -299,14 +283,16 @@ class Llama(nn.Module):
 
         self.tokenizer = tokenizer
 
-        self.tok_embeddings = ParallelEmbedding(params.vocab_size, params.dim, lora_rank=lora_rank)
+        tok_embeddings = ParallelEmbedding(params.vocab_size, params.dim)
+        self.tok_embeddings = maybe_lora(tok_embeddings, lora_rank)
 
         self.layers = nn.ModuleList()
         for layer_id in range(params.n_layers):
             self.layers.append(TransformerBlock(layer_id, params, lora_rank=lora_rank))
 
         self.norm = RMSNorm(params.dim, eps=params.norm_eps)
-        self.output = ColumnParallelLinear(params.dim, params.vocab_size, bias=False, lora_rank=lora_rank)
+        output = ColumnParallelLinear(params.dim, params.vocab_size, bias=False)
+        self.output = maybe_lora(output, lora_rank)
 
         freqs_cis = precompute_freqs_cis(self.params.dim // self.params.n_heads, self.params.max_seq_len * 2)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
