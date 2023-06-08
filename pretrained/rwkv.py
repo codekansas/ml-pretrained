@@ -41,6 +41,10 @@ from typing import Any, Iterator, Literal, Sequence, get_args
 
 import torch
 import torch.nn.functional as F
+from torch import Tensor, nn
+from torch.autograd.function import Function, FunctionCtx
+from torch.utils.cpp_extension import load as load_cpp_extension
+
 from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -48,9 +52,6 @@ from ml.utils.device.base import BaseDevice
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
-from torch import Tensor, nn
-from torch.autograd.function import Function, FunctionCtx
-from torch.utils.cpp_extension import load as load_cpp_extension
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ def get_mask(tsz: int, device: torch.device | None = None, dtype: torch.dtype | 
 
 
 @functools.lru_cache()
-def _kernel(tmax: int = 1024) -> Any:
+def _kernel_func(tmax: int = 1024) -> Any:
     return load_cpp_extension(
         name="wkv",
         sources=["rwkv_kernel.cu"],
@@ -146,10 +147,10 @@ def _kernel(tmax: int = 1024) -> Any:
     )
 
 
-def get_tmax(tsz: int) -> int:
+def _kernel(tsz: int) -> Any:
     if tsz < 1024:
-        return 1024
-    return 2 ** math.ceil(math.log2(tsz))
+        return _kernel_func(1024)
+    return _kernel_func(2 ** math.ceil(math.log2(tsz)))
 
 
 class WKV(Function):
@@ -174,11 +175,11 @@ class WKV(Function):
         v = v.contiguous()
         ctx.save_for_backward(w, u, k, v)
         y = torch.empty((bsz, tsz, chans), device="cuda", memory_format=torch.contiguous_format)
-        _kernel(get_tmax(tsz)).forward(bsz, tsz, chans, w, u, k, v, y)
+        _kernel(tsz).forward(bsz, tsz, chans, w, u, k, v, y)
         return y
 
     @staticmethod
-    def backward(ctx: FunctionCtx, gy: Tensor) -> tuple[Tensor | None, ...]:
+    def backward(ctx: FunctionCtx, gy: Tensor) -> tuple[None, None, None, Tensor, Tensor, Tensor, Tensor]:
         bsz = ctx.bsz
         tsz = ctx.tsz
         chans = ctx.chans
@@ -188,14 +189,10 @@ class WKV(Function):
         gu = torch.zeros((bsz, chans), device="cuda").contiguous()
         gk = torch.zeros((bsz, tsz, chans), device="cuda").contiguous()
         gv = torch.zeros((bsz, tsz, chans), device="cuda").contiguous()
-        _kernel(get_tmax(tsz)).backward(bsz, tsz, chans, w, u, k, v, gy.contiguous(), gw, gu, gk, gv)
+        _kernel(tsz).backward(bsz, tsz, chans, w, u, k, v, gy.contiguous(), gw, gu, gk, gv)
         gw = torch.sum(gw, dim=0)
         gu = torch.sum(gu, dim=0)
         return (None, None, None, gw, gu, gk, gv)
-
-
-def run_wkv_kernel() -> tuple[Tensor, Tensor, Tensor]:
-    pass
 
 
 def run_wkv(
@@ -207,10 +204,11 @@ def run_wkv(
     last_num: Tensor,
     last_den: Tensor,
     mask: Tensor | None = None,
-    use_cuda_if_available: bool = True,
-    require_num_den: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Runs the core WKV computation.
+
+    During training, avoid computing the numerator and denominator by using
+    the ``run_wkv_train`` variant.
 
     Args;
         tsz: The number of timesteps
@@ -232,9 +230,6 @@ def run_wkv(
     assert mask is None or mask.dim() == 2
     assert k.dim() == v.dim() == last_num.dim() == last_den.dim() == 3
 
-    if use_cuda_if_available and torch.cuda.is_available():
-        return WKV.apply(k.size(0), k.size(1), k.size(2), w, u, k, v)
-
     t = torch.arange(tsz + 1, device=w.device)[None, :, None]
     wt = t[:, None, :-1, :] - t[:, :-1, None, :]
     w = -torch.exp(w)
@@ -254,6 +249,22 @@ def run_wkv(
     out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))
 
     return out, num, den
+
+
+def run_wkv_train(
+    tsz: int,
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    last_num: Tensor,
+    last_den: Tensor,
+    mask: Tensor | None = None,
+    use_cuda_if_available: bool = True,
+) -> Tensor:
+    if use_cuda_if_available and torch.cuda.is_available():
+        return WKV.apply(k.size(0), k.size(1), k.size(2), w, u, k, v)
+    return run_wkv(tsz, w, u, k, v, last_num, last_den, mask)[0]
 
 
 class Attention(nn.Module):
