@@ -33,14 +33,14 @@ The choices for the model key are:
 """
 
 import argparse
+import functools
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, Sequence, get_args
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
-
 from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -48,6 +48,9 @@ from ml.utils.device.base import BaseDevice
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
+from torch import Tensor, nn
+from torch.autograd.function import Function, FunctionCtx
+from torch.utils.cpp_extension import load as load_cpp_extension
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,75 @@ def get_mask(tsz: int, device: torch.device | None = None, dtype: torch.dtype | 
     return mask
 
 
+@functools.lru_cache()
+def _kernel(tmax: int = 1024) -> Any:
+    return load_cpp_extension(
+        name="wkv",
+        sources=["rwkv_kernel.cu"],
+        verbose=True,
+        extra_cuda_cflags=[
+            "-res-usage",
+            "--maxrregcount 60",
+            "--use_fast_math",
+            "-O3",
+            "-Xptxas -O3",
+            f"-DTmax={tmax}",
+        ],
+    )
+
+
+def get_tmax(tsz: int) -> int:
+    if tsz < 1024:
+        return 1024
+    return 2 ** math.ceil(math.log2(tsz))
+
+
+class WKV(Function):
+    @staticmethod
+    def forward(
+        ctx: FunctionCtx,
+        bsz: int,
+        tsz: int,
+        chans: int,
+        w: Tensor,
+        u: Tensor,
+        k: Tensor,
+        v: Tensor,
+    ) -> Tensor:
+        ctx.bsz = bsz
+        ctx.tsz = tsz
+        ctx.chans = chans
+        assert bsz * chans % min(chans, 1024) == 0
+        w = -torch.exp(w.contiguous())
+        u = u.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+        ctx.save_for_backward(w, u, k, v)
+        y = torch.empty((bsz, tsz, chans), device="cuda", memory_format=torch.contiguous_format)
+        _kernel(get_tmax(tsz)).forward(bsz, tsz, chans, w, u, k, v, y)
+        return y
+
+    @staticmethod
+    def backward(ctx: FunctionCtx, gy: Tensor) -> tuple[Tensor | None, ...]:
+        bsz = ctx.bsz
+        tsz = ctx.tsz
+        chans = ctx.chans
+        assert bsz * chans % min(chans, 1024) == 0
+        w, u, k, v = ctx.saved_tensors
+        gw = torch.zeros((bsz, chans), device="cuda").contiguous()
+        gu = torch.zeros((bsz, chans), device="cuda").contiguous()
+        gk = torch.zeros((bsz, tsz, chans), device="cuda").contiguous()
+        gv = torch.zeros((bsz, tsz, chans), device="cuda").contiguous()
+        _kernel(get_tmax(tsz)).backward(bsz, tsz, chans, w, u, k, v, gy.contiguous(), gw, gu, gk, gv)
+        gw = torch.sum(gw, dim=0)
+        gu = torch.sum(gu, dim=0)
+        return (None, None, None, gw, gu, gk, gv)
+
+
+def run_wkv_kernel() -> tuple[Tensor, Tensor, Tensor]:
+    pass
+
+
 def run_wkv(
     tsz: int,
     w: Tensor,
@@ -135,6 +207,8 @@ def run_wkv(
     last_num: Tensor,
     last_den: Tensor,
     mask: Tensor | None = None,
+    use_cuda_if_available: bool = True,
+    require_num_den: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Runs the core WKV computation.
 
@@ -147,6 +221,8 @@ def run_wkv(
         last_num: The last numerator, with shape (B, 1, D)
         last_den: The last denominator, with shape (B, 1, D)
         mask: The attention mask, with shape (T, T)
+        use_cuda_if_available: Whether to use CUDA if available
+        require_num_den: Whether to return the numerator and denominator
 
     Returns:
         The WKV tensor, with shape (B, T, D), and the next numerator and
@@ -155,6 +231,9 @@ def run_wkv(
     assert w.dim() == u.dim() == 1
     assert mask is None or mask.dim() == 2
     assert k.dim() == v.dim() == last_num.dim() == last_den.dim() == 3
+
+    if use_cuda_if_available and torch.cuda.is_available():
+        return WKV.apply(k.size(0), k.size(1), k.size(2), w, u, k, v)
 
     t = torch.arange(tsz + 1, device=w.device)[None, :, None]
     wt = t[:, None, :-1, :] - t[:, :-1, None, :]

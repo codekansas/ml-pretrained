@@ -8,6 +8,7 @@ Python version matches, this test simply checks that the iterative version
 matches the batched version.
 """
 
+import pytest
 import torch
 from torch import Tensor
 
@@ -19,15 +20,9 @@ def test_wkv() -> None:
     mask = get_mask(tsz)
 
     # Gets some dummy tensors.
-    # w, u = torch.rand(chans), torch.rand(chans)
-    w, u = torch.arange(chans).flip(0).double(), torch.arange(chans).flip(0).double()
-    u = torch.ones_like(u)
-    # k, v = torch.randn(bsz, tsz, chans), torch.randn(bsz, tsz, chans)
-    k = torch.arange(tsz * chans).double().view(1, tsz, chans).repeat(bsz, 1, 1) / (tsz * chans)
-    v = torch.arange(tsz * chans).double().view(1, tsz, chans).repeat(bsz, 1, 1) / (tsz * chans)
-    # last_num, last_den = torch.randn(bsz, 1, chans), torch.randn(bsz, 1, chans)
-    last_num = torch.arange(chans).double().view(1, 1, -1).repeat(bsz, 1, 1)
-    last_den = torch.arange(chans).double().view(1, 1, -1).repeat(bsz, 1, 1)
+    w, u = torch.rand(chans), torch.rand(chans)
+    k, v = torch.randn(bsz, tsz, chans), torch.randn(bsz, tsz, chans)
+    last_num, last_den = torch.randn(bsz, 1, chans), torch.randn(bsz, 1, chans)
 
     out_full, out_num, out_den = run_wkv(tsz, w, u, k, v, last_num, last_den, mask)
     out_parts: list[Tensor] = []
@@ -51,3 +46,22 @@ def test_wkv() -> None:
     assert torch.allclose(out_full, out_partial)
     assert torch.allclose(out_num, out_num_part)
     assert torch.allclose(out_den, out_den_part)
+
+
+@pytest.mark.has_gpu()
+def test_kernel_matches_ref() -> None:
+    bsz, tsz, chans = 2, 7, 16
+    device = torch.device("cuda")
+    mask = get_mask(tsz, device=device)
+
+    # Gets some dummy tensors.
+    w, u = torch.rand(chans, device=device), torch.rand(chans, device=device)
+    k, v = torch.randn(bsz, tsz, chans, device=device), torch.randn(bsz, tsz, chans, device=device)
+    last_num, last_den = torch.randn(bsz, 1, chans, device=device), torch.randn(bsz, 1, chans, device=device)
+
+    ref_out, ref_num, ref_den = run_wkv(tsz, w, u, k, v, last_num, last_den, mask, use_cuda_if_available=False)
+    cuda_out, cuda_num, cuad_den = run_wkv(tsz, w, u, k, v, last_num, last_den, mask, use_cuda_if_available=True)
+
+    assert torch.allclose(ref_out, cuda_out)
+    assert torch.allclose(ref_num, cuda_num)
+    assert torch.allclose(ref_den, cuad_den)
