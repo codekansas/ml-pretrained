@@ -37,6 +37,8 @@ This is a collection of pre-trained model implementations, which can be used in 
 
 The goal of this repository is to make it as easy as possible to try out a pre-trained model, and eventually incorporate it into a new project. To that end, each implementation is a self-contained file, so that you can just copy-paste it wholesale into whatever project your using or use it directly without adding a bunch of dependencies. Additionally, the implementations use high-quality, modern Python syntax to be as easy to follow as possible.
 
+This also includes some custom Triton kernels for certain operations which may benefit from GPU acceleration.
+
 ### License
 
 Note that while this particular code is MIT licensed, but that does not mean that all of the model weights are. You should comply with the upstream licenses for models that you use.

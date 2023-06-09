@@ -22,6 +22,12 @@ Using the tokenizer requires installing the ``tokenizers`` library:
 
     pip install tokenizers
 
+Additionally, using the training mode CUDA kernel requires installing ``ninja``:
+
+.. code-block:: bash
+
+    pip install ninja
+
 The choices for the model key are:
 
 - ``"169m"``
@@ -33,18 +39,12 @@ The choices for the model key are:
 """
 
 import argparse
-import functools
 import logging
-import math
 from dataclasses import dataclass
 from typing import Any, Iterator, Literal, Sequence, get_args
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
-from torch.autograd.function import Function, FunctionCtx
-from torch.utils.cpp_extension import load as load_cpp_extension
-
 from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -52,6 +52,12 @@ from ml.utils.device.base import BaseDevice
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
+from torch import Tensor, nn
+
+try:
+    from pretrained.triton.rwkv_kernel import triton_wkv
+except ImportError:
+    triton_wkv = None
 
 logger = logging.getLogger(__name__)
 
@@ -130,73 +136,7 @@ def get_mask(tsz: int, device: torch.device | None = None, dtype: torch.dtype | 
     return mask
 
 
-@functools.lru_cache()
-def _kernel_func(tmax: int = 1024) -> Any:
-    return load_cpp_extension(
-        name="wkv",
-        sources=["rwkv_kernel.cu"],
-        verbose=True,
-        extra_cuda_cflags=[
-            "-res-usage",
-            "--maxrregcount 60",
-            "--use_fast_math",
-            "-O3",
-            "-Xptxas -O3",
-            f"-DTmax={tmax}",
-        ],
-    )
-
-
-def _kernel(tsz: int) -> Any:
-    if tsz < 1024:
-        return _kernel_func(1024)
-    return _kernel_func(2 ** math.ceil(math.log2(tsz)))
-
-
-class WKV(Function):
-    @staticmethod
-    def forward(
-        ctx: FunctionCtx,
-        bsz: int,
-        tsz: int,
-        chans: int,
-        w: Tensor,
-        u: Tensor,
-        k: Tensor,
-        v: Tensor,
-    ) -> Tensor:
-        ctx.bsz = bsz
-        ctx.tsz = tsz
-        ctx.chans = chans
-        assert bsz * chans % min(chans, 1024) == 0
-        w = -torch.exp(w.contiguous())
-        u = u.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        ctx.save_for_backward(w, u, k, v)
-        y = torch.empty((bsz, tsz, chans), device="cuda", memory_format=torch.contiguous_format)
-        _kernel(tsz).forward(bsz, tsz, chans, w, u, k, v, y)
-        return y
-
-    @staticmethod
-    def backward(ctx: FunctionCtx, gy: Tensor) -> tuple[None, None, None, Tensor, Tensor, Tensor, Tensor]:
-        bsz = ctx.bsz
-        tsz = ctx.tsz
-        chans = ctx.chans
-        assert bsz * chans % min(chans, 1024) == 0
-        w, u, k, v = ctx.saved_tensors
-        gw = torch.zeros((bsz, chans), device="cuda").contiguous()
-        gu = torch.zeros((bsz, chans), device="cuda").contiguous()
-        gk = torch.zeros((bsz, tsz, chans), device="cuda").contiguous()
-        gv = torch.zeros((bsz, tsz, chans), device="cuda").contiguous()
-        _kernel(tsz).backward(bsz, tsz, chans, w, u, k, v, gy.contiguous(), gw, gu, gk, gv)
-        gw = torch.sum(gw, dim=0)
-        gu = torch.sum(gu, dim=0)
-        return (None, None, None, gw, gu, gk, gv)
-
-
 def run_wkv(
-    tsz: int,
     w: Tensor,
     u: Tensor,
     k: Tensor,
@@ -211,7 +151,6 @@ def run_wkv(
     the ``run_wkv_train`` variant.
 
     Args;
-        tsz: The number of timesteps
         w: The decay tensor, with shape (D)
         u: The output multiplier tensor, with shape (D)
         k: The K tensor, with shape (B, T, D)
@@ -226,33 +165,34 @@ def run_wkv(
         The WKV tensor, with shape (B, T, D), and the next numerator and
         denominator tensors, each with shape (B, T, D)
     """
+    _, tsz, _ = k.shape
+
     assert w.dim() == u.dim() == 1
     assert mask is None or mask.dim() == 2
     assert k.dim() == v.dim() == last_num.dim() == last_den.dim() == 3
 
-    t = torch.arange(tsz + 1, device=w.device)[None, :, None]
-    wt = t[:, None, :-1, :] - t[:, :-1, None, :]
-    w = -torch.exp(w)
-    tw = w * t[:, 1:]
-    twt = w * wt
-    ktw = twt + k[:, :, None]
+    t = torch.arange(tsz + 1, device=w.device)[None, :, None]  # (1, T, 1)
+    wt = t[:, None, :-1, :] - t[:, :-1, None, :]  # (1, T, T, 1)
+    w = -torch.exp(w)  # (D)
+    tw = w * t[:, 1:]  # (1, T, 1)
+    twt = w * wt  # (1, T, T, 1)
+    ktw = twt + k[:, :, None]  # (B, T, T, D)
     if mask is not None:
         ktw = ktw + mask[None, :tsz, :tsz, None]
 
-    etw, ektw = torch.exp(tw), torch.exp(ktw)
-    num = etw * last_num + (ektw * v[:, :, None]).sum(1)
-    den = etw * last_den + ektw.sum(1)
+    etw, ektw = torch.exp(tw), torch.exp(ktw)  # (1, T, 1), (B, T, T, D)
+    num = etw * last_num + (ektw * v[:, :, None]).sum(1)  # (B, T, D)
+    den = etw * last_den + ektw.sum(1)  # (B, T, D)
 
-    last_num = torch.cat((last_num, num[..., :-1, :]), dim=-2)
-    last_den = torch.cat((last_den, den[..., :-1, :]), dim=-2)
+    last_num = torch.cat((last_num, num[..., :-1, :]), dim=-2)  # (B, T, D)
+    last_den = torch.cat((last_den, den[..., :-1, :]), dim=-2)  # (B, T, D)
 
-    out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))
+    out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))  # (B, T, D)
 
     return out, num, den
 
 
 def run_wkv_train(
-    tsz: int,
     w: Tensor,
     u: Tensor,
     k: Tensor,
@@ -263,8 +203,9 @@ def run_wkv_train(
     use_cuda_if_available: bool = True,
 ) -> Tensor:
     if use_cuda_if_available and torch.cuda.is_available():
-        return WKV.apply(k.size(0), k.size(1), k.size(2), w, u, k, v)
-    return run_wkv(tsz, w, u, k, v, last_num, last_den, mask)[0]
+        assert triton_wkv is not None, "Triton is not installed"
+        return triton_wkv(w, u, k, v, last_num, last_den)
+    return run_wkv(w, u, k, v, last_num, last_den, mask)[0]
 
 
 class Attention(nn.Module):
@@ -299,7 +240,7 @@ class Attention(nn.Module):
             last_x = torch.cat((last_x, x[..., :-1, :]), dim=-2)
         return last_x
 
-    def forward(self, x: Tensor, state: AttentionState) -> tuple[Tensor, AttentionState]:
+    def forward(self, x: Tensor, state: AttentionState | None) -> tuple[Tensor, AttentionState]:
         bsz, tsz, _ = x.shape
 
         if state is None:
@@ -316,10 +257,10 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        wkv, num, den = run_wkv(tsz, w, u, k, v, last_num, last_den, self.mask)
+        wkv, num, den = run_wkv(w, u, k, v, last_num, last_den, self.mask)
         rwkv = wkv * sr
 
-        return self.output(rwkv), (x[..., -1:, :], num[..., -1:, :], den[..., -1:, :])
+        return self.output(rwkv), AttentionState(x[..., -1:, :], num[..., -1:, :], den[..., -1:, :])
 
 
 class FeedForward(nn.Module):

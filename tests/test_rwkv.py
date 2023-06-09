@@ -59,9 +59,7 @@ def test_kernel_matches_ref() -> None:
     k, v = torch.randn(bsz, tsz, chans, device=device), torch.randn(bsz, tsz, chans, device=device)
     last_num, last_den = torch.randn(bsz, 1, chans, device=device), torch.randn(bsz, 1, chans, device=device)
 
-    ref_out, ref_num, ref_den = run_wkv_train(tsz, w, u, k, v, last_num, last_den, mask, use_cuda_if_available=False)
-    cuda_out, cuda_num, cuad_den = run_wkv_train(tsz, w, u, k, v, last_num, last_den, mask, use_cuda_if_available=True)
+    ref_out = run_wkv_train(w, u, k, v, last_num, last_den, mask, use_cuda_if_available=False)
+    cuda_out = run_wkv_train(w, u, k, v, last_num, last_den, mask, use_cuda_if_available=True)
 
     assert torch.allclose(ref_out, cuda_out)
-    assert torch.allclose(ref_num, cuda_num)
-    assert torch.allclose(ref_den, cuad_den)
