@@ -150,7 +150,7 @@ def run_wkv(
     During training, avoid computing the numerator and denominator by using
     the ``run_wkv_train`` variant.
 
-    Args;
+    Args:
         w: The decay tensor, with shape (D)
         u: The output multiplier tensor, with shape (D)
         k: The K tensor, with shape (B, T, D)

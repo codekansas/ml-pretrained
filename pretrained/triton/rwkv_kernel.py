@@ -16,23 +16,28 @@ def _forward_kernel(
     last_num_ptr,
     last_den_ptr,
     k_stride_b,
+    k_stride_c,
     v_stride_b,
+    v_stride_c,
     tsz,
+    chans,
     y_ptr,
     num_ptr,
     den_ptr,
     BLOCK_T: tl.constexpr,
-    BLOCK_C: tl.constexpr,
 ):
-    # Parallelize over the batch dimension.
+    # Parallelize over the batch and channel dimensions.
     b_idx = tl.program_id(0)
+    c_idx = tl.program_id(1)
 
-    # Start pointers for the current batch.
-    k_start_ptr = k_ptr + b_idx * k_stride_b
-    v_start_ptr = v_ptr + b_idx * v_stride_b
+    # Start pointers for the current time row.
+    k_start_ptr = k_ptr + b_idx * k_stride_b + c_idx * k_stride_c
+    v_start_ptr = v_ptr + b_idx * v_stride_b + c_idx * v_stride_c
 
-    # Time 
-    t = tl.arange(0, tsz + 1)
+    # Loads a row of times.
+    t = tl.arange(0, tsz)
+    k = tl.load(k_start_ptr, t)
+    v = tl.load(v_start_ptr, t)
 
 
 def _forward(
@@ -44,12 +49,15 @@ def _forward(
     last_den: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
     bsz, tsz, chans = k.shape
+
+    # (B, T, C) -> (B, C, T)
+    k, v = k.transpose(1, 2).contiguous(), v.transpose(1, 2).contiguous()
+
     BLOCK_T = triton.next_power_of_2(tsz)
-    BLOCK_C = triton.next_power_of_2(chans)
     y = k.new_empty(k.shape)
     num = k.new_empty(k.shape)
     den = k.new_empty(k.shape)
-    _forward_kernel[(bsz,)](
+    _forward_kernel[(bsz, chans)](
         w,
         u,
         k,
@@ -57,13 +65,14 @@ def _forward(
         last_num,
         last_den,
         k.stride(0),
+        k.stride(1),
         v.stride(0),
+        v.stride(1),
         tsz,
         y,
         num,
         den,
         BLOCK_T=BLOCK_T,
-        BLOCK_C=BLOCK_C,
     )
     return y
 
