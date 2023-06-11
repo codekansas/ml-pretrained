@@ -241,7 +241,7 @@ class Attention(nn.Module):
         return last_x
 
     def forward(self, x: Tensor, state: AttentionState | None) -> tuple[Tensor, AttentionState]:
-        bsz, tsz, _ = x.shape
+        bsz, _, _ = x.shape
 
         if state is None:
             last_x = self.init_x.repeat(bsz, 1, 1)
@@ -260,7 +260,7 @@ class Attention(nn.Module):
         wkv, num, den = run_wkv(w, u, k, v, last_num, last_den, self.mask)
         rwkv = wkv * sr
 
-        return self.output(rwkv), AttentionState(x[..., -1:, :], num[..., -1:, :], den[..., -1:, :])
+        return self.output(rwkv), (x[..., -1:, :], num[..., -1:, :], den[..., -1:, :])
 
 
 class FeedForward(nn.Module):
@@ -440,6 +440,8 @@ def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None,
     with Timer("loading state dict", spinner=True):
         model._apply(meta_to_empty_func(device.get_device(), torch.half))
         model.load_state_dict(ckpt)
+
+    model._apply(lambda x: device.tensor_to(x))
 
     return model
 

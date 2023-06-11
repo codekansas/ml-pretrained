@@ -22,7 +22,6 @@ def _forward_kernel(
     y_ptr,
     num_ptr,
     den_ptr,
-    BLOCK_T: tl.constexpr,
 ):
     # Parallelize over the batch and channel dimensions.
     b_idx = tl.program_id(0)
@@ -34,39 +33,30 @@ def _forward_kernel(
     y_start_ptr = y_ptr + b_idx * stride_b + c_idx * stride_c
     num_start_ptr = num_ptr + b_idx * stride_b + c_idx * stride_c
     den_start_ptr = den_ptr + b_idx * stride_b + c_idx * stride_c
-    w_start_ptr = w_ptr + c_idx
-    u_start_ptr = u_ptr + c_idx
-    last_num_start_ptr = last_num_ptr + b_idx * stride_b + c_idx * stride_c
-    last_den_start_ptr = last_den_ptr + b_idx * stride_b + c_idx * stride_c
 
-    # Loads a row of times.
-    t = tl.arange(0, BLOCK_T)
-    t_mask = t < tsz
-    t_mask_2 = (t + 1) < tsz
-    k = tl.load(k_start_ptr + t, mask=t_mask)  # T
-    v = tl.load(v_start_ptr + t, mask=t_mask)  # T
-    w = -tl.exp(tl.load(w_start_ptr))  # 1
-    u = tl.load(u_start_ptr)  # 1
-    last_num = tl.load(last_num_start_ptr)  # 1
-    last_den = tl.load(last_den_start_ptr)  # 1
+    # Loads mixing parameters.
+    num = tl.load(last_num_ptr + b_idx * stride_b + c_idx * stride_c)
+    den = tl.load(last_den_ptr + b_idx * stride_b + c_idx * stride_c)
+    w = -tl.exp(tl.load(w_ptr + c_idx))
+    u = tl.load(u_ptr + c_idx)
 
-    # Runs the forward pass computation.
-    tw = w * (t + 1)  # T
-    tt = t[None, :] - t[:, None]
-    twt = w * tt  # (T, T)
-    ktw = twt + k[:, None]  # (T, T)
-    ktw = tl.where(tt < 0, float("-inf"), ktw)
-    etw, ektw = tl.exp(tw), tl.exp(ktw)  # T, (T, T)
-    num = etw * last_num + tl.sum(ektw * v[:, None], 0)  # T
-    den = etw * last_den + tl.sum(ektw, 0)  # T
+    for t in range(tsz):
+        # Load the current key and value.
+        k = tl.load(k_start_ptr + t)
+        v = tl.load(v_start_ptr + t)
 
-    # last_out = (last_num + tl.exp(u + k) * v) / (last_den + tl.exp(u + k))  # 1
-    out = (num + tl.exp(u + k) * v) / (den + tl.exp(u + k))  # T
+        # Compute the new output.
+        c = tl.exp(u + k)
+        y = (num + (c * v)) / (den + c)
 
-    tl.store(num_start_ptr + t, num, mask=t_mask)
-    tl.store(den_start_ptr + t, den, mask=t_mask)
-    # tl.store(y_start_ptr, last_out)
-    tl.store(y_start_ptr + 1 + t, out, mask=t_mask_2)
+        # Compute the new numerator and denominator.
+        num = tl.exp(w) * num + tl.exp(w * v)
+        den = tl.exp(w) * den + tl.exp(w)
+
+        # Store the results.
+        tl.store(y_start_ptr + t, y)
+        tl.store(num_start_ptr + t, num)
+        tl.store(den_start_ptr + t, den)
 
 
 def _forward(
@@ -78,8 +68,6 @@ def _forward(
     last_den: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
     bsz, tsz, chans = k.shape
-
-    BLOCK_T = max(triton.next_power_of_2(tsz), 512)
 
     k = k.transpose(1, 2).contiguous()  # (B, T, C) -> (B, C, T)
     v = v.transpose(1, 2).contiguous()  # (B, T, C) -> (B, C, T)
@@ -102,39 +90,38 @@ def _forward(
         y,
         num,
         den,
-        BLOCK_T=BLOCK_T,
     )
 
-    y = y.transpose(1, 2).contiguous()
-    num = num.transpose(1, 2).contiguous()
-    den = den.transpose(1, 2).contiguous()
+    y = y.transpose(1, 2).contiguous()  # (B, C, T) -> (B, T, C)
+    num = num.transpose(1, 2).contiguous()  # (B, C, T) -> (B, T, C)
+    den = den.transpose(1, 2).contiguous()  # (B, C, T) -> (B, T, C)
 
-    # REFERENCE IMPLEMENTATION - DELETE LATER
-    k, v = k.transpose(1, 2), v.transpose(1, 2)
-    t = torch.arange(tsz + 1, device=w.device)[None, :, None]  # (1, T, 1)
-    wt = t[:, None, :-1, :] - t[:, :-1, None, :]  # (1, T, T, 1)
-    w = -torch.exp(w)  # (D)
-    tw = w * t[:, 1:]  # (1, T, 1)
-    twt = w * wt  # (1, T, T, 1)
-    ktw = twt + k[:, :, None]  # (B, T, T, D)
-    device, dtype = tw.device, tw.dtype
-    mask = torch.empty(tsz, tsz, device=device, dtype=dtype)
-    mask.fill_(float("-inf"))
-    # mask.triu_(1)
-    mask.tril_(-1)
-    ktw = ktw + mask[None, :tsz, :tsz, None]
-    etw, ektw = torch.exp(tw), torch.exp(ktw)  # (1, T, 1), (B, T, T, D)
-    ref_num = etw * last_num + (ektw * v[:, :, None]).sum(1)  # (B, T, D)
-    ref_den = etw * last_den + ektw.sum(1)  # (B, T, D)
+    # # REFERENCE IMPLEMENTATION - DELETE LATER
+    # k, v = k.transpose(1, 2), v.transpose(1, 2)
+    # t = torch.arange(tsz + 1, device=w.device)[None, :, None]  # (1, T, 1)
+    # wt = t[:, None, :-1, :] - t[:, :-1, None, :]  # (1, T, T, 1)
+    # w = -torch.exp(w)  # (D)
+    # tw = w * t[:, 1:]  # (1, T, 1)
+    # twt = w * wt  # (1, T, T, 1)
+    # ktw = twt + k[:, :, None]  # (B, T, T, D)
+    # device, dtype = tw.device, tw.dtype
+    # mask = torch.empty(tsz, tsz, device=device, dtype=dtype)
+    # mask.fill_(float("-inf"))
+    # # mask.triu_(1)
+    # mask.tril_(-1)
+    # ktw = ktw + mask[None, :tsz, :tsz, None]
+    # etw, ektw = torch.exp(tw), torch.exp(ktw)  # (1, T, 1), (B, T, T, D)
+    # ref_num = etw * last_num + (ektw * v[:, :, None]).sum(1)  # (B, T, D)
+    # ref_den = etw * last_den + ektw.sum(1)  # (B, T, D)
 
-    last_num = torch.cat((last_num, ref_num[..., :-1, :]), dim=-2)  # (B, T, D)
-    last_den = torch.cat((last_den, ref_den[..., :-1, :]), dim=-2)  # (B, T, D)
+    # last_num = torch.cat((last_num, ref_num[..., :-1, :]), dim=-2)  # (B, T, D)
+    # last_den = torch.cat((last_den, ref_den[..., :-1, :]), dim=-2)  # (B, T, D)
 
-    out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))  # (B, T, D)
+    # out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))  # (B, T, D)
 
-    breakpoint()
+    # breakpoint()
 
-    return y
+    return y, num, den
 
 
 def _backward(
