@@ -63,3 +63,8 @@ def test_kernel_matches_ref() -> None:
     cuda_out = run_wkv_train(w, u, k, v, last_num, last_den, mask, use_cuda_if_available=True)
 
     assert torch.allclose(ref_out, cuda_out)
+
+
+if __name__ == "__main__":
+    # python -m tests.test_rwkv
+    test_kernel_matches_ref()
