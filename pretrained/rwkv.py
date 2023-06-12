@@ -139,12 +139,13 @@ def run_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor
     _, tsz, _ = k.shape
 
     w = -torch.exp(w)  # (D)
+    ew = torch.exp(w)  # (D)
 
     outs = []
 
     for t in range(tsz):
         kt, vt = k[:, t:t + 1], v[:, t:t + 1]
-        ew, ek = torch.exp(w), torch.exp(kt)  # (1, T, 1), (B, T, T, D)
+        ek = torch.exp(kt)  # (1, T, 1), (B, T, T, D)
         out = (num + torch.exp(u + kt) * vt) / (den + torch.exp(u + kt))  # (B, T, D)
         num = ew * num + (ek * vt).sum(1, keepdim=True)  # (B, T, D)
         den = ew * den + ek.sum(1, keepdim=True)  # (B, T, D)
