@@ -15,11 +15,10 @@ from typing import cast
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
-
 from ml.core.config import conf_field
 from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded, get_state_dict_prefix
+from torch import Tensor, nn
 
 WAVEGLOW_CKPT_FP16 = "https://api.ngc.nvidia.com/v2/models/nvidia/waveglow_ckpt_amp/versions/19.09.0/files/nvidia_waveglowpyt_fp16_20190427"
 WAVEGLOW_CKPT_FP32 = "https://api.ngc.nvidia.com/v2/models/nvidia/waveglow_ckpt_fp32/versions/19.09.0/files/nvidia_waveglowpyt_fp32_20190427"

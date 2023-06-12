@@ -31,9 +31,6 @@ import PIL.Image
 import torch
 import torch.nn.functional as F
 import torchvision.transforms.functional as V
-from omegaconf import MISSING
-from torch import Tensor, nn
-
 from ml.core.config import conf_field
 from ml.models.activations import ActivationType, get_activation
 from ml.models.init import init_
@@ -44,6 +41,8 @@ from ml.utils.device.base import BaseDevice
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
+from omegaconf import MISSING
+from torch import Tensor, nn
 
 logger = logging.getLogger(__name__)
 
