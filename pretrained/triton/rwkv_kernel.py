@@ -1,7 +1,6 @@
 # ruff: noqa: ANN001, ANN201, ANN202, N803, N806
 """Defines a Triton kernel for the RWKV forward and backward passes."""
 
-import torch
 import triton
 import triton.language as tl
 from torch import Tensor

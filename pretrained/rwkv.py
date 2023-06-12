@@ -22,11 +22,11 @@ Using the tokenizer requires installing the ``tokenizers`` library:
 
     pip install tokenizers
 
-Additionally, using the training mode CUDA kernel requires installing ``ninja``:
+Additionally, using the training mode CUDA kernel requires installing ``triton``:
 
 .. code-block:: bash
 
-    pip install ninja
+    pip install
 
 The choices for the model key are:
 
@@ -118,24 +118,6 @@ PRETRAINED_MODEL_SIZES: dict[PretrainedRwkvKey, ModelArgs] = {
 TOKENIZER_URL = "https://raw.githubusercontent.com/BlinkDL/ChatRWKV/main/20B_tokenizer.json"
 
 
-def get_mask(tsz: int, device: torch.device | None = None, dtype: torch.dtype | None = None) -> Tensor:
-    """Returns the forward mask, used for training.
-
-    Args:
-        tsz: The number of timesteps in the mask
-        device: The mask device
-        dtype: The mask dtype
-
-    Returns:
-        The forward mask, with shape (T, T)
-    """
-    mask = torch.empty(tsz, tsz, device=device, dtype=dtype)
-    mask.fill_(float("-inf"))
-    # mask.triu_(1)
-    mask.tril_(-1)
-    return mask
-
-
 def run_wkv(
     w: Tensor,
     u: Tensor,
@@ -143,7 +125,6 @@ def run_wkv(
     v: Tensor,
     last_num: Tensor,
     last_den: Tensor,
-    mask: Tensor | None = None,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Runs the core WKV computation.
 
@@ -153,43 +134,46 @@ def run_wkv(
     Args:
         w: The decay tensor, with shape (D)
         u: The output multiplier tensor, with shape (D)
-        k: The K tensor, with shape (B, T, D)
-        v: The V tensor, with shape (B, T, D)
+        k: The K tensor, with shape (B, 1, D)
+        v: The V tensor, with shape (B, 1, D)
         last_num: The last numerator, with shape (B, 1, D)
         last_den: The last denominator, with shape (B, 1, D)
-        mask: The attention mask, with shape (T, T)
-        use_cuda_if_available: Whether to use CUDA if available
-        require_num_den: Whether to return the numerator and denominator
 
     Returns:
-        The WKV tensor, with shape (B, T, D), and the next numerator and
-        denominator tensors, each with shape (B, T, D)
+        The WKV tensor, with shape (B, 1, D), and the next numerator and
+        denominator tensors, each with shape (B, 1, D)
     """
-    _, tsz, _ = k.shape
-
     assert w.dim() == u.dim() == 1
-    assert mask is None or mask.dim() == 2
     assert k.dim() == v.dim() == last_num.dim() == last_den.dim() == 3
 
-    t = torch.arange(tsz + 1, device=w.device)[None, :, None]  # (1, T, 1)
-    wt = t[:, None, :-1, :] - t[:, :-1, None, :]  # (1, T, T, 1)
     w = -torch.exp(w)  # (D)
-    tw = w * t[:, 1:]  # (1, T, 1)
-    twt = w * wt  # (1, T, T, 1)
-    ktw = twt + k[:, :, None]  # (B, T, T, D)
-    if mask is not None:
-        ktw = ktw + mask[None, :tsz, :tsz, None]
 
-    etw, ektw = torch.exp(tw), torch.exp(ktw)  # (1, T, 1), (B, T, T, D)
-    num = etw * last_num + (ektw * v[:, :, None]).sum(1)  # (B, T, D)
-    den = etw * last_den + ektw.sum(1)  # (B, T, D)
-
-    last_num = torch.cat((last_num, num[..., :-1, :]), dim=-2)  # (B, T, D)
-    last_den = torch.cat((last_den, den[..., :-1, :]), dim=-2)  # (B, T, D)
-
+    ew, ek = torch.exp(w), torch.exp(k)  # (1, T, 1), (B, T, T, D)
+    num = ew * last_num + (ek * v).sum(1, keepdim=True)  # (B, T, D)
+    den = ew * last_den + ek.sum(1)  # (B, T, D)
     out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))  # (B, T, D)
 
     return out, num, den
+
+
+def run_wkv_multi(
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    last_num: Tensor,
+    last_den: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    _, tsz, _ = k.shape
+
+    outs, last_nums, last_dens = [], [], []
+    for t in range(tsz):
+        out, last_num, last_den = run_wkv(w, u, k[:, t:t + 1], v[:, t:t + 1], last_num, last_den)
+        outs.append(out)
+        last_nums.append(last_num)
+        last_dens.append(last_den)
+
+    return torch.cat(outs, 1), torch.cat(last_nums, 1), torch.cat(last_dens, 1)
 
 
 def run_wkv_train(
@@ -199,20 +183,18 @@ def run_wkv_train(
     v: Tensor,
     last_num: Tensor,
     last_den: Tensor,
-    mask: Tensor | None = None,
     use_cuda_if_available: bool = True,
 ) -> Tensor:
     if use_cuda_if_available and torch.cuda.is_available():
         assert triton_wkv is not None, "Triton is not installed"
         return triton_wkv(w, u, k, v, last_num, last_den)
-    return run_wkv(w, u, k, v, last_num, last_den, mask)[0]
+    return run_wkv(w, u, k, v, last_num, last_den)[0]
 
 
 class Attention(nn.Module):
     init_x: Tensor
     init_num: Tensor
     init_den: Tensor
-    mask: Tensor
 
     def __init__(self, emb_dim: int, max_tsz: int = 1024, lora_rank: int | None = None) -> None:
         super().__init__()
@@ -232,7 +214,6 @@ class Attention(nn.Module):
         self.register_buffer("init_x", torch.zeros(1, 1, emb_dim), persistent=False)
         self.register_buffer("init_num", torch.zeros(1, 1, emb_dim), persistent=False)
         self.register_buffer("init_den", torch.zeros(1, 1, emb_dim), persistent=False)
-        self.register_buffer("mask", get_mask(max_tsz), persistent=False)
 
     def time_shift(self, last_x: Tensor, x: Tensor) -> Tensor:
         _, tsz, _ = x.shape
@@ -257,7 +238,7 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        wkv, num, den = run_wkv(w, u, k, v, last_num, last_den, self.mask)
+        wkv, num, den = run_wkv_multi(w, u, k, v, last_num, last_den)
         rwkv = wkv * sr
 
         return self.output(rwkv), (x[..., -1:, :], num[..., -1:, :], den[..., -1:, :])
@@ -425,23 +406,34 @@ class RwkvPredictor:
                 probs, state = self.model(self.model.tensor_to(torch.tensor([[token]])), state)
 
 
-def pretrained_rwkv(key: PretrainedRwkvKey, *, device: BaseDevice | None = None, lora_rank: int | None = None) -> Rwkv:
+def pretrained_rwkv(
+    key: PretrainedRwkvKey,
+    *,
+    device: BaseDevice | None = None,
+    lora_rank: int | None = None,
+    empty: bool = False,
+) -> Rwkv:
     device = AutoDevice.detect_device() if device is None else device
     model_args = PRETRAINED_MODEL_SIZES[key]
+
+    with Timer("building model skeleton", spinner=True), init_empty_weights():
+        model = Rwkv(model_args.emb_dim, 50277, model_args.num_layers, lora_rank=lora_rank)
+
+    if empty:
+        model._apply(meta_to_empty_func(device.get_device(), torch.half))
+        model._apply(lambda x: device.tensor_to(x))
+        return model
+
     ckpt_path = ensure_downloaded(model_args.url, "rwkv", f"{key}.pth", sha256=model_args.sha256)
 
     with Timer("loading model checkpoint", spinner=True):
         ckpt = torch.load(ckpt_path, map_location="cpu")
 
-    with Timer("building model skeleton", spinner=True), init_empty_weights():
-        model = Rwkv(model_args.emb_dim, 50277, model_args.num_layers, lora_rank=lora_rank)
-
     # Build the transformer and loads the checkpoint.
     with Timer("loading state dict", spinner=True):
         model._apply(meta_to_empty_func(device.get_device(), torch.half))
         model.load_state_dict(ckpt)
-
-    model._apply(lambda x: device.tensor_to(x))
+        model._apply(lambda x: device.tensor_to(x))
 
     return model
 
@@ -455,11 +447,12 @@ def test_rwkv_adhoc() -> None:
     parser.add_argument("-p", "--top-p", type=float, default=0.85)
     parser.add_argument("-e", "--end-tok", type=str, nargs="+", default=[])
     parser.add_argument("-s", "--sep", type=str, default="")
+    parser.add_argument("-y", "--empty", action="store_true")
     args = parser.parse_args()
 
     configure_logging()
 
-    model = pretrained_rwkv(args.size)
+    model = pretrained_rwkv(args.size, empty=args.empty)
     predictor = model.predictor()
 
     def generate_for_prompt(prompt: str) -> None:
