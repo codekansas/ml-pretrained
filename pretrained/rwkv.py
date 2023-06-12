@@ -118,6 +118,35 @@ PRETRAINED_MODEL_SIZES: dict[PretrainedRwkvKey, ModelArgs] = {
 TOKENIZER_URL = "https://raw.githubusercontent.com/BlinkDL/ChatRWKV/main/20B_tokenizer.json"
 
 
+def _wkv_vanilla(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    assert w.dim() == u.dim() == 1
+    assert k.dim() == v.dim() == num.dim() == den.dim() == 3
+
+    _, tsz, _ = k.shape
+
+    w = -torch.exp(w)  # (D)
+    ew = torch.exp(w)  # (D)
+
+    outs = []
+
+    for t in range(tsz):
+        kt, vt = k[:, t:t + 1], v[:, t:t + 1]  # (B, 1, D), (B, 1, D)
+        ek = torch.exp(kt)  # (B, 1, D)
+        euk = torch.exp(u + kt)  # (B, 1, D)
+        out = (num + euk * vt) / (den + euk)  # (B, 1, D)
+        num = ew * num + ek * vt  # (B, 1, D)
+        den = ew * den + ek  # (B, 1, D)
+        outs.append(out)
+
+    return torch.cat(outs, 1), num, den
+
+
+def _wkv_triton(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    from pretrained.triton.rwkv_kernel import triton_wkv
+
+    return triton_wkv(w, u, k, v, num, den)
+
+
 def run_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     """Runs the core WKV computation.
 
@@ -133,25 +162,9 @@ def run_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor
         The WKV tensor, with shape (B, T, D), and the next numerator and
         denominator tensors, each with shape (B, 1, D)
     """
-    assert w.dim() == u.dim() == 1
-    assert k.dim() == v.dim() == num.dim() == den.dim() == 3
-
-    _, tsz, _ = k.shape
-
-    w = -torch.exp(w)  # (D)
-    ew = torch.exp(w)  # (D)
-
-    outs = []
-
-    for t in range(tsz):
-        kt, vt = k[:, t:t + 1], v[:, t:t + 1]
-        ek = torch.exp(kt)  # (1, T, 1), (B, T, T, D)
-        out = (num + torch.exp(u + kt) * vt) / (den + torch.exp(u + kt))  # (B, T, D)
-        num = ew * num + (ek * vt).sum(1, keepdim=True)  # (B, T, D)
-        den = ew * den + ek.sum(1, keepdim=True)  # (B, T, D)
-        outs.append(out)
-
-    return torch.cat(outs, 1), num, den
+    if torch.cuda.is_available():
+        return _wkv_triton(w, u, k, v, num, den)
+    return _wkv_vanilla(w, u, k, v, num, den)
 
 
 class Attention(nn.Module):
