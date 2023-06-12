@@ -12,40 +12,29 @@ import pytest
 import torch
 from torch import Tensor
 
-from pretrained.rwkv import get_mask, run_wkv, run_wkv_train
+from pretrained.rwkv import run_wkv
 
 
 def test_wkv() -> None:
     bsz, tsz, chans = 2, 7, 16
-    mask = get_mask(tsz)
 
     # Gets some dummy tensors.
     w, u = torch.rand(chans), torch.rand(chans)
     k, v = torch.randn(bsz, tsz, chans), torch.randn(bsz, tsz, chans)
-    last_num, last_den = torch.randn(bsz, 1, chans), torch.randn(bsz, 1, chans)
+    num, den = torch.randn(bsz, 1, chans), torch.randn(bsz, 1, chans)
 
-    out_full, out_num, out_den = run_wkv(tsz, w, u, k, v, last_num, last_den, mask)
+    # Runs in full mode.
+    out_full, _, _ = run_wkv(w, u, k, v, num, den)
+
+    # Runs in iterative mode.
     out_parts: list[Tensor] = []
-    out_nums: list[Tensor] = []
-    out_dens: list[Tensor] = []
-    last_num_t, last_den_t = last_num, last_den
     for t in range(tsz):
-        out_part, last_num_t, last_den_t = run_wkv(1, w, u, k[:, t : t + 1], v[:, t : t + 1], last_num_t, last_den_t)
+        out_part, num, den = run_wkv(w, u, k[:, t : t + 1], v[:, t : t + 1], num, den)
         out_parts.append(out_part)
-        out_nums.append(last_num_t)
-        out_dens.append(last_den_t)
-
     out_partial = torch.cat(out_parts, dim=1)
-    out_num_part = torch.cat(out_nums, dim=1)
-    out_den_part = torch.cat(out_dens, dim=1)
 
-    out_full - out_partial
-    out_num - out_num_part
-    out_den - out_den_part
-
+    breakpoint()
     assert torch.allclose(out_full, out_partial)
-    assert torch.allclose(out_num, out_num_part)
-    assert torch.allclose(out_den, out_den_part)
 
 
 @pytest.mark.has_gpu()

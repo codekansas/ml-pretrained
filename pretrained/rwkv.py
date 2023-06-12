@@ -118,77 +118,39 @@ PRETRAINED_MODEL_SIZES: dict[PretrainedRwkvKey, ModelArgs] = {
 TOKENIZER_URL = "https://raw.githubusercontent.com/BlinkDL/ChatRWKV/main/20B_tokenizer.json"
 
 
-def run_wkv(
-    w: Tensor,
-    u: Tensor,
-    k: Tensor,
-    v: Tensor,
-    last_num: Tensor,
-    last_den: Tensor,
-) -> tuple[Tensor, Tensor, Tensor]:
+def run_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     """Runs the core WKV computation.
-
-    During training, avoid computing the numerator and denominator by using
-    the ``run_wkv_train`` variant.
 
     Args:
         w: The decay tensor, with shape (D)
         u: The output multiplier tensor, with shape (D)
-        k: The K tensor, with shape (B, 1, D)
-        v: The V tensor, with shape (B, 1, D)
-        last_num: The last numerator, with shape (B, 1, D)
-        last_den: The last denominator, with shape (B, 1, D)
+        k: The K tensor, with shape (B, T, D)
+        v: The V tensor, with shape (B, T, D)
+        num: The last numerator, with shape (B, 1, D)
+        den: The last denominator, with shape (B, 1, D)
 
     Returns:
-        The WKV tensor, with shape (B, 1, D), and the next numerator and
+        The WKV tensor, with shape (B, T, D), and the next numerator and
         denominator tensors, each with shape (B, 1, D)
     """
     assert w.dim() == u.dim() == 1
-    assert k.dim() == v.dim() == last_num.dim() == last_den.dim() == 3
+    assert k.dim() == v.dim() == num.dim() == den.dim() == 3
+
+    _, tsz, _ = k.shape
 
     w = -torch.exp(w)  # (D)
 
-    ew, ek = torch.exp(w), torch.exp(k)  # (1, T, 1), (B, T, T, D)
-    num = ew * last_num + (ek * v).sum(1, keepdim=True)  # (B, T, D)
-    den = ew * last_den + ek.sum(1)  # (B, T, D)
-    out = (last_num + torch.exp(u + k) * v) / (last_den + torch.exp(u + k))  # (B, T, D)
+    outs = []
 
-    return out, num, den
-
-
-def run_wkv_multi(
-    w: Tensor,
-    u: Tensor,
-    k: Tensor,
-    v: Tensor,
-    last_num: Tensor,
-    last_den: Tensor,
-) -> tuple[Tensor, Tensor, Tensor]:
-    _, tsz, _ = k.shape
-
-    outs, last_nums, last_dens = [], [], []
     for t in range(tsz):
-        out, last_num, last_den = run_wkv(w, u, k[:, t:t + 1], v[:, t:t + 1], last_num, last_den)
+        kt, vt = k[:, t:t + 1], v[:, t:t + 1]
+        ew, ek = torch.exp(w), torch.exp(kt)  # (1, T, 1), (B, T, T, D)
+        out = (num + torch.exp(u + kt) * vt) / (den + torch.exp(u + kt))  # (B, T, D)
+        num = ew * num + (ek * vt).sum(1, keepdim=True)  # (B, T, D)
+        den = ew * den + ek.sum(1, keepdim=True)  # (B, T, D)
         outs.append(out)
-        last_nums.append(last_num)
-        last_dens.append(last_den)
 
-    return torch.cat(outs, 1), torch.cat(last_nums, 1), torch.cat(last_dens, 1)
-
-
-def run_wkv_train(
-    w: Tensor,
-    u: Tensor,
-    k: Tensor,
-    v: Tensor,
-    last_num: Tensor,
-    last_den: Tensor,
-    use_cuda_if_available: bool = True,
-) -> Tensor:
-    if use_cuda_if_available and torch.cuda.is_available():
-        assert triton_wkv is not None, "Triton is not installed"
-        return triton_wkv(w, u, k, v, last_num, last_den)
-    return run_wkv(w, u, k, v, last_num, last_den)[0]
+    return torch.cat(outs, 1), num, den
 
 
 class Attention(nn.Module):
@@ -226,10 +188,10 @@ class Attention(nn.Module):
 
         if state is None:
             last_x = self.init_x.repeat(bsz, 1, 1)
-            last_num = self.init_num.repeat(bsz, 1, 1)
-            last_den = self.init_den.repeat(bsz, 1, 1)
+            num = self.init_num.repeat(bsz, 1, 1)
+            den = self.init_den.repeat(bsz, 1, 1)
         else:
-            last_x, last_num, last_den = state
+            last_x, num, den = state
         last_x = self.time_shift(last_x, x)
 
         k = self.key(x * self.time_mix_k + last_x * (1 - self.time_mix_k))
@@ -238,10 +200,10 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        wkv, num, den = run_wkv_multi(w, u, k, v, last_num, last_den)
+        wkv, num, den = run_wkv(w, u, k, v, num, den)
         rwkv = wkv * sr
 
-        return self.output(rwkv), (x[..., -1:, :], num[..., -1:, :], den[..., -1:, :])
+        return self.output(rwkv), (x[..., -1:, :], num, den)
 
 
 class FeedForward(nn.Module):
