@@ -1115,7 +1115,8 @@ class Tokenizer:
 
 
 def ensure_tacotron_downloaded() -> Path:
-    return ensure_downloaded(TACOTRON_CKPT_URL, "tacotron2", "weights_tacotron.pth")
+    with Timer("downloading checkpoint"):
+        return ensure_downloaded(TACOTRON_CKPT_URL, "tacotron2", "weights_tacotron.pth")
 
 
 def pretrained_tacotron2(

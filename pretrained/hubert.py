@@ -577,7 +577,7 @@ def _load_pretrained_hubert(
     if load_weights:
         model_fname = f"{size}.bin"
 
-        with Timer("downloading checkpoint", spinner=True):
+        with Timer("downloading checkpoint"):
             model_path = ensure_downloaded(ckpt_url, "hubert", model_fname, sha256=sha256)
 
         with Timer("loading checkpoint", spinner=True):

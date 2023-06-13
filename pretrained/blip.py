@@ -443,7 +443,9 @@ class BlipPredictor:
 def pretrained_blip(key: PretrainedBlipKey, *, device: BaseDevice | None = None) -> Blip:
     device = AutoDevice.detect_device() if device is None else device
     model_args = PRETRAINED_MODEL_SIZES[key]
-    ckpt_path = ensure_downloaded(model_args.url, "blip", f"{key}.pth")
+
+    with Timer("downloading checkpoint"):
+        ckpt_path = ensure_downloaded(model_args.url, "blip", f"{key}.pth")
 
     with Timer("loading model checkpoint", spinner=True):
         ckpt = torch.load(ckpt_path, map_location="cpu")["model"]

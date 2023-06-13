@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from ml.core.config import conf_field
 from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded, get_state_dict_prefix
+from ml.utils.timer import Timer
 from torch import Tensor, nn
 
 WAVEGLOW_CKPT_FP16 = "https://api.ngc.nvidia.com/v2/models/nvidia/waveglow_ckpt_amp/versions/19.09.0/files/nvidia_waveglowpyt_fp16_20190427"
@@ -325,7 +326,8 @@ def pretrained_waveglow(
 
     if pretrained:
         weights_name = f"weights_fp{16 if fp16 else 32}.pth"
-        fpath = ensure_downloaded(WAVEGLOW_CKPT_FP16 if fp16 else WAVEGLOW_CKPT_FP32, "waveglow", weights_name)
+        with Timer("downloading checkpoint"):
+            fpath = ensure_downloaded(WAVEGLOW_CKPT_FP16 if fp16 else WAVEGLOW_CKPT_FP32, "waveglow", weights_name)
         ckpt = torch.load(fpath, map_location="cpu")
         model.load_state_dict(get_state_dict_prefix(ckpt["state_dict"], "module."))
 

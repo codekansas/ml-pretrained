@@ -328,7 +328,8 @@ def get_tokenizer() -> Any:
     except ImportError:
         raise ImportError("Please install tokenizers with: `pip install tokenizers`")
 
-    tokenizer_path = ensure_downloaded(TOKENIZER_URL, "rwkv", "tokenizer.json")
+    with Timer("downloading tokenizer"):
+        tokenizer_path = ensure_downloaded(TOKENIZER_URL, "rwkv", "tokenizer.json")
     return Tokenizer.from_file(str(tokenizer_path))
 
 
@@ -410,7 +411,8 @@ def pretrained_rwkv(
         model._apply(lambda x: device.tensor_to(x))
         return model
 
-    ckpt_path = ensure_downloaded(model_args.url, "rwkv", f"{key}.pth", sha256=model_args.sha256)
+    with Timer("downloading checkpoint"):
+        ckpt_path = ensure_downloaded(model_args.url, "rwkv", f"{key}.pth", sha256=model_args.sha256)
 
     with Timer("loading model checkpoint", spinner=True):
         ckpt = torch.load(ckpt_path, map_location="cpu")

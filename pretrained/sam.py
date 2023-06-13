@@ -42,6 +42,7 @@ from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
 from ml.utils.logging import configure_logging
+from ml.utils.timer import Timer
 from torch import Tensor, nn
 from torchvision.transforms.functional import resize, to_pil_image
 
@@ -1497,7 +1498,8 @@ def get_pretrained_path(key: PretrainedSamSize) -> Path:
     if key not in PRETRAINED_MODELS:
         raise KeyError(f"Invalid CLIP model key {key}; choices are {list(PRETRAINED_MODELS.keys())}")
     model_url = PRETRAINED_MODELS[key].url
-    filepath = ensure_downloaded(model_url, "sam", f"{key}_ckpt.pt")
+    with Timer("downloading checkpoint"):
+        filepath = ensure_downloaded(model_url, "sam", f"{key}_ckpt.pt")
     return filepath
 
 
