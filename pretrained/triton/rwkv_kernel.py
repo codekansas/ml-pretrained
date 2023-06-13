@@ -159,6 +159,10 @@ def _forward_kernel_2(
         den = A * den + B
         o = no
 
+    A = tl.exp(o)
+    num = A * num
+    den = A * den
+
     tl.store(num_out_ptr, num)
     tl.store(den_out_ptr, den)
 
@@ -338,17 +342,35 @@ class _WKV(Function):
         for t in (v, num, den, w, u):
             assert t.dtype == dtype and t.device == device
 
+        # This is some code for testing stuff.
+        # import torch
+        # num.copy_(torch.randn_like(num))
+        # den.copy_(torch.randn_like(den))
+        # num.copy_(torch.arange(num.shape[-1])[None, None, :].repeat(num.shape[0], 1, 1))
+        # den.copy_(torch.arange(den.shape[-1])[None, None, :].repeat(den.shape[0], 1, 1))
+
         # out, num_out, den_out = _forward(w, u, k, v, num, den)
-        out, num_out, den_out = _forward_2(w, u, k, v, num, den)
+        # out2, num_out2, den_out2 = _forward_2(w, u, k, v, num, den)
+        # breakpoint()
+
+        if tsz == 1:
+            out, num_out, den_out = _forward(w, u, k, v, num, den)
+        else:
+            out, num_out, den_out = _forward_2(w, u, k, v, num, den)
+
+        # out, num_out, den_out = _forward_2(w, u, k, v, num, den)
+
         ctx.save_for_backward(w, u, k, v, out, num_out, den_out)
 
         return out, num_out, den_out
 
     @staticmethod
     def backward(ctx: FunctionCtx, gout: Tensor, gnum_out: Tensor, gden_out: Tensor) -> tuple[Tensor, ...]:
-        w, u, k, v, out, num_out, den_out = ctx.saved_tensors
-        gw, gu, gk, gv, gn, gd = _backward(w, u, k, v, out, num_out, den_out, gout, gnum_out, gden_out)
-        return gw, gu, gk, gv, gn, gd
+        # w, u, k, v, out, num_out, den_out = ctx.saved_tensors
+        # gw, gu, gk, gv, gn, gd = _backward(w, u, k, v, out, num_out, den_out, gout, gnum_out, gden_out)
+        # return gw, gu, gk, gv, gn, gd
+
+        raise NotImplementedError
 
 
 def triton_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> Tensor:
