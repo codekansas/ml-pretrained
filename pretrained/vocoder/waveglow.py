@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from ml.core.config import conf_field
-from ml.models.lora import lora, maybe_lora
+from ml.models.lora import maybe_lora
 from ml.utils.checkpoint import ensure_downloaded, get_state_dict_prefix
 
 WAVEGLOW_CKPT_FP16 = "https://api.ngc.nvidia.com/v2/models/nvidia/waveglow_ckpt_amp/versions/19.09.0/files/nvidia_waveglowpyt_fp16_20190427"

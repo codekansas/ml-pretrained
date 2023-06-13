@@ -734,7 +734,7 @@ class Decoder(nn.Module):
         memory: Tensor,
         memory_lengths: Tensor,
         states: DecoderStates | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, DecoderStates]:
         dec_in = self.get_go_frame(memory)
         if states is None:
             states = self.initialize_decoder_states(memory, mask=get_mask_from_lengths(memory_lengths))
@@ -1282,32 +1282,37 @@ def test_tacotron_adhoc() -> None:
     tts = pretrained_tacotron2_tts()
 
     def generate_for_text(texts: Iterable[str]) -> None:
-        audio, _ = tts.generate(text, postnet=True).cpu()
+        states: DecoderStates | None = None
 
-        if args.out_file is None:
-            try:
-                import sounddevice as sd
-            except ImportError:
-                raise ImportError("Please install sounddevice to play audio: pip install sounddevice")
+        for text in texts:
+            audio, states = tts.generate(text, postnet=True, states=states).cpu()
 
-            # Converts audio to the format that sounddevice is expecting.
-            audio = audio.numpy().T
+            if args.out_file is None:
+                try:
+                    import sounddevice as sd
+                except ImportError:
+                    raise ImportError("Please install sounddevice to play audio: pip install sounddevice")
 
-            sd.play(audio, tts.sampling_rate, blocking=True)
+                audio = audio.numpy().T
+                sd.play(audio, tts.sampling_rate, blocking=True)
 
-        else:
-            out_path = Path(args.out_file)
-            out_path.parent.mkdir(exist_ok=True)
-            write_audio(iter([audio]), out_path, tts.sampling_rate)
+            else:
+                out_path = Path(args.out_file)
+                out_path.parent.mkdir(exist_ok=True)
+                write_audio(iter([audio]), out_path, tts.sampling_rate)
 
     if args.text:
-        generate_for_text(args.text)
+        generate_for_text([args.text])
 
     else:
-        text = input("Text: ")
-        while text:
-            generate_for_text(text)
+
+        def gen_texts() -> Iterable[str]:
             text = input("Text: ")
+            while text:
+                yield text
+                text = input("Text: ")
+
+        generate_for_text(gen_texts())
 
 
 if __name__ == "__main__":
