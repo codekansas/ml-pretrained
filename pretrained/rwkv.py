@@ -41,7 +41,7 @@ The choices for the model key are:
 import argparse
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterator, Literal, Sequence, get_args
+from typing import Any, Callable, Iterator, Literal, Sequence, get_args
 
 import torch
 import torch.nn.functional as F
@@ -53,11 +53,6 @@ from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
-
-try:
-    from pretrained.triton.rwkv_kernel import triton_wkv
-except ImportError:
-    triton_wkv = None
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +113,28 @@ PRETRAINED_MODEL_SIZES: dict[PretrainedRwkvKey, ModelArgs] = {
 TOKENIZER_URL = "https://raw.githubusercontent.com/BlinkDL/ChatRWKV/main/20B_tokenizer.json"
 
 
-def _wkv_vanilla(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+def _wkv_vanilla(
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    num: Tensor,
+    den: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Runs the core WKV computation.
+
+    Args:
+        w: The decay tensor, with shape (D)
+        u: The output multiplier tensor, with shape (D)
+        k: The K tensor, with shape (B, T, D)
+        v: The V tensor, with shape (B, T, D)
+        num: The last numerator, with shape (B, 1, D)
+        den: The last denominator, with shape (B, 1, D)
+
+    Returns:
+        The WKV tensor, with shape (B, T, D), and the next numerator and
+        denominator tensors, each with shape (B, 1, D)
+    """
     assert w.dim() == u.dim() == 1
     assert k.dim() == v.dim() == num.dim() == den.dim() == 3
 
@@ -141,30 +157,22 @@ def _wkv_vanilla(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: T
     return torch.cat(outs, 1), num, den
 
 
-def _wkv_triton(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-    from pretrained.triton.rwkv_kernel import triton_wkv
+def get_wkv_fn() -> Callable[[tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]], tuple[Tensor, Tensor, Tensor]]:
+    """Returns the WKV function to use.
 
-    return triton_wkv(w, u, k, v, num, den)
-
-
-def run_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-    """Runs the core WKV computation.
-
-    Args:
-        w: The decay tensor, with shape (D)
-        u: The output multiplier tensor, with shape (D)
-        k: The K tensor, with shape (B, T, D)
-        v: The V tensor, with shape (B, T, D)
-        num: The last numerator, with shape (B, 1, D)
-        den: The last denominator, with shape (B, 1, D)
+    The function takes six tensors as input, and returns three tensors as
+    output. The input tensors are ``w``, ``u``, ``k``, ``v``, ``num``, and
+    ``den``, and the output tensors are ``out``, ``num``, and ``den``.
 
     Returns:
-        The WKV tensor, with shape (B, T, D), and the next numerator and
-        denominator tensors, each with shape (B, 1, D)
+        The WKV function to use.
     """
     if torch.cuda.is_available():
-        return _wkv_triton(w, u, k, v, num, den)
-    return _wkv_vanilla(w, u, k, v, num, den)
+        from pretrained.triton.rwkv_kernel import triton_wkv
+
+        return triton_wkv
+
+    return _wkv_vanilla
 
 
 class Attention(nn.Module):
@@ -191,6 +199,8 @@ class Attention(nn.Module):
         self.register_buffer("init_num", torch.zeros(1, 1, emb_dim), persistent=False)
         self.register_buffer("init_den", torch.zeros(1, 1, emb_dim), persistent=False)
 
+        self.wkv_fn = get_wkv_fn()
+
     def time_shift(self, last_x: Tensor, x: Tensor) -> Tensor:
         _, tsz, _ = x.shape
         if tsz > 1:
@@ -214,7 +224,7 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        wkv, num, den = run_wkv(w, u, k, v, num, den)
+        wkv, num, den = self.wkv_fn(w, u, k, v, num, den)
         rwkv = wkv * sr
 
         return self.output(rwkv), (x[..., -1:, :], num, den)
