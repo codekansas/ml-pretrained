@@ -69,6 +69,17 @@ class HubertConfig:
         return len(self.conv_dim)
 
 
+def normalize_output_layer(output_layer: int | float | None, num_layers: int) -> int | None:
+    if output_layer is not None:
+        if isinstance(output_layer, float):
+            output_layer = round(output_layer * num_layers)
+        if output_layer < 0:
+            output_layer += num_layers
+        if not (0 <= output_layer < num_layers):
+            raise ValueError(f"output_layer={output_layer} is outside the range of available layers")
+    return output_layer
+
+
 class HubertSamePadLayer(nn.Module):
     def __init__(self, num_conv_pos_embeddings: int) -> None:
         super().__init__()
@@ -206,13 +217,12 @@ class HubertEncoder(nn.Module):
         self.layers = cast(list[HubertEncoderLayer], layers)
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states: Tensor, causal: bool = False, output_layer: int | None = None) -> Tensor:
+    def forward(self, hidden_states: Tensor, causal: bool = False, output_layer: int | float | None = None) -> Tensor:
         position_embeddings = self.pos_conv_embed.forward(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        if output_layer is not None and output_layer < 0:
-            output_layer += len(self.layers)
+        output_layer = normalize_output_layer(output_layer, len(self.layers))
         for i, layer in enumerate(self.layers):
             hidden_states = layer.forward(hidden_states, causal=causal)
             if output_layer is not None and i == output_layer:
@@ -376,8 +386,7 @@ class HubertEncoderStableLayerNorm(nn.Module):
         position_embeddings = self.pos_conv_embed(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.dropout(hidden_states)
-        if output_layer is not None and output_layer < 0:
-            output_layer += len(self.layers)
+        output_layer = normalize_output_layer(output_layer, len(self.layers))
         for i, layer in enumerate(self.layers):
             hidden_states = layer.forward(hidden_states, causal=causal)
             if output_layer is not None and i == output_layer:
