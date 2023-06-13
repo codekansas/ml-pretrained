@@ -52,6 +52,7 @@ def _forward_kernel(
         vt = tl.load(v_ptr + t * chans).to(tl.float32)
         ek = tl.exp(kt)
         euk = tl.exp(u + kt)
+
         out = (num + euk * vt) / (den + euk)
         tl.store(out_ptr + t * chans, out)
         num = ew * num + ek * vt
@@ -141,21 +142,26 @@ def _backward_kernel(
     gden_ptr = gden_ptr + b_idx * chans + c_idx
 
     # Loads parameters.
-    out = tl.load(out_ptr).to(tl.float32)
     num_out = tl.load(num_out_ptr).to(tl.float32)
     den_out = tl.load(den_out_ptr).to(tl.float32)
-    gout = tl.load(gout_ptr).to(tl.float32)
-    gnum_out = tl.load(gnum_out_ptr).to(tl.float32)
-    gden_out = tl.load(gden_out_ptr).to(tl.float32)
+    gnum = tl.load(gnum_out_ptr).to(tl.float32)
+    gden = tl.load(gden_out_ptr).to(tl.float32)
     w = -tl.exp(tl.load(w_ptr).to(tl.float32))
     ew = tl.exp(w)
     u = tl.load(u_ptr).to(tl.float32)
 
     for t in range(tsz - 1, -1, -1):
+        gout = tl.load(gout_ptr + t * chans).to(tl.float32)
         kt = tl.load(k_ptr + t * chans).to(tl.float32)
         vt = tl.load(v_ptr + t * chans).to(tl.float32)
         ek = tl.exp(kt)
         euk = tl.exp(u + kt)
+
+        gnum = (gnum * ew) + gout / (den_out + euk)
+        gden = (gden * ew) - (euk * gout) / (den_out + euk)
+
+    tl.store(gnum_ptr, gnum)
+    tl.store(gden_ptr, gden)
 
 
 def _backward(

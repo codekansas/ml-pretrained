@@ -62,11 +62,13 @@ def test_kernel_matches_ref(dtype: torch.dtype) -> None:
         assert torch.allclose(ref, cuda, atol=1e-6), f"{name} mismatch"
 
     # Checks the backwards passes also match.
-    # (ref_out.sum() + ref_num.sum() + ref_den.sum()).backward()
-    # (cuda_out.sum() + cuda_num.sum() + cuda_den.sum()).backward()
+    (ref_out.sum() + ref_num.sum() + ref_den.sum()).backward()
+    (cuda_out.sum() + cuda_num.sum() + cuda_den.sum()).backward()
 
     # for ref, cuda in zip((wr, ur, kr, vr, numr, denr), (wc, uc, kc, vc, numc, denc)):
     #     assert torch.allclose(ref.grad, cuda.grad, atol=1e-6)
+    for ref, cuda in zip((numr, denr), (numc, denc)):
+        assert torch.allclose(ref.grad, cuda.grad, atol=1e-6)
 
 
 @pytest.mark.has_gpu()
