@@ -50,17 +50,22 @@ def _forward_kernel(
     num = tl.load(num_ptr).to(tl.float32)
     den = tl.load(den_ptr).to(tl.float32)
     w = -tl.exp(tl.load(w_ptr).to(tl.float32))
-    ew = tl.exp(w)
     u = tl.load(u_ptr).to(tl.float32)
 
+    ew = tl.exp(w)
+
     for t in range(tsz):
-        kt = tl.load(k_ptr + t * chans).to(tl.float32)
-        vt = tl.load(v_ptr + t * chans).to(tl.float32)
-        ek = tl.exp(kt)
+        tc = t * chans
+
+        kt = tl.load(k_ptr + tc).to(tl.float32)
+        vt = tl.load(v_ptr + tc).to(tl.float32)
+
         euk = tl.exp(u + kt)
 
         out = (num + euk * vt) / (den + euk)
-        tl.store(out_ptr + t * chans, out)
+        tl.store(out_ptr + tc, out)
+
+        ek = tl.exp(kt)
         num = ew * num + ek * vt
         den = ew * den + ek
 
@@ -136,8 +141,7 @@ def _forward_kernel_2(
     # Loads parameters.
     num = tl.load(num_ptr).to(tl.float32)
     den = tl.load(den_ptr).to(tl.float32)
-    w = tl.load(w_ptr).to(tl.float32)
-    w = -tl.exp(w)
+    w = -tl.exp(tl.load(w_ptr).to(tl.float32))
     u = tl.load(u_ptr).to(tl.float32)
 
     o = -1e38
@@ -149,20 +153,23 @@ def _forward_kernel_2(
         vt = tl.load(v_ptr + tc).to(tl.float32)
 
         no = tl.maximum(o, u + kt)
-        A = tl.exp(o - no)
-        B = tl.exp(u + kt - no)
-        tl.store(out_ptr + tc, (A * num + B * vt) / (A * den + B))
+        eo = tl.exp(o - no)
+        euk = tl.exp(u + kt - no)
 
-        no = tl.maximum(w + o, kt)
-        A = tl.exp(w + o - no)
-        B = tl.exp(kt - no)
-        num = A * num + B * vt
-        den = A * den + B
-        o = no
+        out = (eo * num + euk * vt) / (eo * den + euk)
+        tl.store(out_ptr + tc, out)
 
-    A = tl.exp(o)
-    num = A * num
-    den = A * den
+        nwo = tl.maximum(w + o, kt)
+        ew = tl.exp(w + o - nwo)
+        ek = tl.exp(kt - nwo)
+        num = ew * num + ek * vt
+        den = ew * den + ek
+
+        o = nwo
+
+    ew = tl.exp(o)
+    num = ew * num
+    den = ew * den
 
     tl.store(num_out_ptr, num)
     tl.store(den_out_ptr, den)
@@ -350,14 +357,9 @@ class _WKV(Function):
         # num.copy_(torch.arange(num.shape[-1])[None, None, :].repeat(num.shape[0], 1, 1))
         # den.copy_(torch.arange(den.shape[-1])[None, None, :].repeat(den.shape[0], 1, 1))
 
-        # out, num_out, den_out = _forward(w, u, k, v, num, den)
+        out, num_out, den_out = _forward(w, u, k, v, num, den)
         # out2, num_out2, den_out2 = _forward_2(w, u, k, v, num, den)
         # breakpoint()
-
-        if tsz == 1:
-            out, num_out, den_out = _forward(w, u, k, v, num, den)
-        else:
-            out, num_out, den_out = _forward_2(w, u, k, v, num, den)
 
         # out, num_out, den_out = _forward_2(w, u, k, v, num, den)
 
