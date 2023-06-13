@@ -98,7 +98,7 @@ class HubertPositionalConvEmbedding(nn.Module):
     def __init__(self, config: HubertConfig) -> None:
         super().__init__()
 
-        self.conv = nn.Conv1d(
+        conv = nn.Conv1d(
             config.hidden_size,
             config.hidden_size,
             kernel_size=config.num_conv_pos_embeddings,
@@ -106,8 +106,7 @@ class HubertPositionalConvEmbedding(nn.Module):
             groups=config.num_conv_pos_embedding_groups,
         )
 
-        self.conv = nn.utils.weight_norm(self.conv, name="weight", dim=2)
-
+        self.conv = nn.utils.weight_norm(conv, dim=2)
         self.padding = HubertSamePadLayer(config.num_conv_pos_embeddings)
         self.activation = get_activation(config.feat_extract_activation)
 
@@ -642,7 +641,7 @@ def pretrained_hubert(size: PretrainedHubertSize, load_weights: bool = True) -> 
                     feat_proj_layer_norm=True,
                     feat_proj_dropout=0.0,
                     layer_norm_eps=1e-5,
-                    feat_extract_norm="group",
+                    feat_extract_norm="layer",
                     feat_extract_dropout=0.0,
                     feat_extract_activation="gelu",
                     conv_dim=(512, 512, 512, 512, 512, 512, 512),
