@@ -47,6 +47,7 @@ module = [
     "ffmpeg.*",
     "matplotlib.*",
     "torchvision.*",
+    "triton.*",
 ]
 
 ignore_missing_imports = true
