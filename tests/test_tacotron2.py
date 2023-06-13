@@ -11,6 +11,6 @@ def test_training_matches_inference() -> None:
 
     memory = torch.randn(1, 10, 512)
     memory_lengths = torch.tensor([10])
-    mels_infer, _, _ = model.decoder.infer(memory, memory_lengths)
-    mels_train, _, _ = model.decoder.forward(memory, mels_infer, memory_lengths)
+    mels_infer, _, _, _ = model.decoder.infer(memory, memory_lengths)
+    mels_train, _, _, _ = model.decoder.forward(memory, mels_infer, memory_lengths)
     assert torch.allclose(mels_infer, mels_train)
