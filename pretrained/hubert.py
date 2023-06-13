@@ -23,12 +23,14 @@ The choices for the model key are:
 
 import argparse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, cast, get_args
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from ml.models.activations import ActivationType, get_activation
+from ml.utils.audio import Reader, read_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
@@ -442,6 +444,7 @@ class HubertPredictor:
         self.device = AutoDevice.detect_device() if device is None else device
         self.model = hubert_model.eval()
         self.device.module_to(self.model)
+        self.sample_rate = 16_000  # True for all HuBERT models.
 
     def predict(
         self,
@@ -470,7 +473,7 @@ class HubertPredictor:
     def predict_in_chunks(
         self,
         waveform: Tensor | np.ndarray,
-        chunk_size: int,
+        chunk_size: int = 16_000 * 10,
         output_layer: int | float | None = None,
         causal: bool = False,
     ) -> Tensor:
@@ -482,7 +485,7 @@ class HubertPredictor:
 
         Args:
             waveform: The waveform to get hidden states for, with shape (B, T)
-            chunk_size: The size of each chunk to process.
+            chunk_size: The size of each chunk to process, in frames.
             output_layer: The layer to get hidden states from. If `None`, will
                 return the hidden states from the last layer. If an `int`, will
                 return the hidden states from that layer. If a `float`, will
@@ -505,6 +508,52 @@ class HubertPredictor:
             for start in range(0, x.size(1), chunk_size):
                 x_chunk = x[:, start : start + chunk_size]
                 feat_chunk = self.model.forward(x_chunk, causal=causal, output_layer=output_layer)
+                feat.append(feat_chunk)
+
+        return torch.cat(feat, 1).squeeze(0)
+
+    def predict_file(
+        self,
+        path: str | Path,
+        chunk_length_sec: float = 10.0,
+        output_layer: int | float | None = None,
+        causal: bool = False,
+        *,
+        reader: Reader = "av",
+    ) -> Tensor:
+        """Gets the hidden states for the given audio file, in chunks.
+
+        Args:
+            path: The path to the audio file to process.
+            chunk_length_sec: The length of each chunk to process, in seconds.
+            output_layer: The layer to get hidden states from. If `None`, will
+                return the hidden states from the last layer. If an `int`, will
+                return the hidden states from that layer. If a `float`, will
+                return the hidden states from the layer at that percentage of
+                the model. For example, `0.5` will return the hidden states
+                from the middle layer. Negative values will wrap around.
+            causal: If set, use a causal attention mask.
+            reader: The reader to use for reading the audio file.
+
+        Returns:
+            The hidden states for the given waveform, with shape (B, T, D)
+        """
+        chunk_length = round(chunk_length_sec * self.sample_rate)
+        with torch.inference_mode():
+            feat = []
+            for waveform_chunk in read_audio(
+                path,
+                chunk_length=chunk_length,
+                sampling_rate=self.sample_rate,
+                reader=reader,
+            ):
+                assert waveform_chunk.shape[0] == 1, "Expected mono-channel audio."
+                x = self.device.tensor_to(torch.from_numpy(waveform_chunk[0]))
+                if self.model.pre_normalize:
+                    x = F.layer_norm(x, x.shape)
+                x = x.view(1, -1)
+
+                feat_chunk = self.model.forward(x, causal=causal, output_layer=output_layer)
                 feat.append(feat_chunk)
 
         return torch.cat(feat, 1).squeeze(0)
