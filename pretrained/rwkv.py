@@ -420,7 +420,8 @@ def test_rwkv_adhoc() -> None:
     parser.add_argument("-t", "--tsz", type=int, default=128)
     parser.add_argument("-m", "--temperature", type=float, default=1.0)
     parser.add_argument("-p", "--top-p", type=float, default=0.85)
-    parser.add_argument("-e", "--end-tok", nargs="+", default=[])
+    parser.add_argument("-e", "--end-tok", type=str, nargs="+", default=[])
+    parser.add_argument("-s", "--sep", type=str, default="")
     args = parser.parse_args()
 
     configure_logging()
@@ -437,7 +438,7 @@ def test_rwkv_adhoc() -> None:
             top_p=args.top_p,
             end_strs=args.end_tok,
         ):
-            print(token, end="", flush=True)
+            print(token, end=args.sep, flush=True)
         print()
 
     if args.prompt:

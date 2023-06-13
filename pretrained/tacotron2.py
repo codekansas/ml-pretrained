@@ -10,7 +10,7 @@ end-to-end TTS model, adapted to be fine-tunable.
     from pretrained.tacotron2 import pretrained_tacotron2_tts
 
     tts = pretrained_tacotron2_tts()
-    audio = tts.generate("Hello, world!")
+    audio, states = tts.generate("Hello, world!")
     write_audio([audio])
 
 You can also interact with this model directly through the command line:
@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from math import sqrt
 from numbers import Number
 from pathlib import Path
-from typing import Callable, NamedTuple, cast
+from typing import Callable, Iterable, NamedTuple, cast
 
 import numpy as np
 import torch
@@ -661,11 +661,12 @@ class Decoder(nn.Module):
         mel_outputs: list[Tensor],
         gate_outputs: list[Tensor],
         alignments: list[Tensor],
-    ) -> tuple[Tensor, Tensor, Tensor]:
+        states: DecoderStates,
+    ) -> tuple[Tensor, Tensor, Tensor, DecoderStates]:
         alignments = torch.stack(alignments, dim=1)
         gate_outputs = torch.stack(gate_outputs, dim=1)
         mel_outputs = torch.stack(mel_outputs, dim=-1)
-        return mel_outputs, gate_outputs, alignments
+        return mel_outputs, gate_outputs, alignments, states
 
     def decode(self, decoder_input: Tensor, states: DecoderStates) -> tuple[Tensor, Tensor, Tensor, DecoderStates]:
         attn_h, attn_c, dec_h, dec_c, attn_weights, attn_weights_cum, attn_ctx, memory, processed_memory, mask = states
@@ -702,7 +703,13 @@ class Decoder(nn.Module):
 
         return dec_out, gate_pred, attn_weights, new_states
 
-    def forward(self, memory: Tensor, dec_ins: Tensor, memory_lengths: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(
+        self,
+        memory: Tensor,
+        dec_ins: Tensor,
+        memory_lengths: Tensor,
+        states: DecoderStates | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor, DecoderStates]:
         dec_in = self.get_go_frame(memory).unsqueeze(0)
         dec_ins = self.parse_decoder_inputs(dec_ins)
         dec_ins = torch.cat((dec_in, dec_ins), dim=0)
@@ -720,11 +727,17 @@ class Decoder(nn.Module):
             gate_outs += [gate_out.squeeze(1)]
             alignments += [attn_weights]
 
-        return self.parse_decoder_outputs(mel_outs, gate_outs, alignments)
+        return self.parse_decoder_outputs(mel_outs, gate_outs, alignments, states)
 
-    def infer(self, memory: Tensor, memory_lengths: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def infer(
+        self,
+        memory: Tensor,
+        memory_lengths: Tensor,
+        states: DecoderStates | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
         dec_in = self.get_go_frame(memory)
-        states = self.initialize_decoder_states(memory, mask=get_mask_from_lengths(memory_lengths))
+        if states is None:
+            states = self.initialize_decoder_states(memory, mask=get_mask_from_lengths(memory_lengths))
 
         mel_outs: list[Tensor] = []
         gate_outs: list[Tensor] = []
@@ -742,7 +755,7 @@ class Decoder(nn.Module):
                 break
             dec_in = mel_out
 
-        return self.parse_decoder_outputs(mel_outs, gate_outs, alignments)
+        return self.parse_decoder_outputs(mel_outs, gate_outs, alignments, states)
 
 
 def window_sumsquare(
@@ -1010,9 +1023,9 @@ class Tacotron(BaseModel):
 
     def parse_output(
         self,
-        outputs: tuple[Tensor, Tensor, Tensor, Tensor],
+        outputs: tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates],
         output_lengths: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates]:
         if self.mask_padding and output_lengths is not None:
             mask = ~get_mask_from_lengths(output_lengths)
             mask = mask.expand(self.n_mel_channels, mask.size(0), mask.size(1))
@@ -1024,20 +1037,29 @@ class Tacotron(BaseModel):
 
         return outputs
 
-    def forward(self, inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor]) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(
+        self,
+        inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
+        states: DecoderStates | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates]:
         text_inputs, text_lengths, mels, _, output_lengths = inputs
         embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
         encoder_outputs = self.encoder(embedded_inputs, text_lengths)
-        mel_outputs, gate_outputs, alignments = self.decoder(encoder_outputs, mels, memory_lengths=text_lengths)
+        mel_outputs, gate_outputs, alignments, states = self.decoder(encoder_outputs, mels, text_lengths, states)
         mel_outputs_postnet = mel_outputs + self.postnet(mel_outputs)
-        return self.parse_output((mel_outputs, mel_outputs_postnet, gate_outputs, alignments), output_lengths)
+        return self.parse_output((mel_outputs, mel_outputs_postnet, gate_outputs, alignments, states), output_lengths)
 
-    def infer(self, inputs: Tensor, input_lengths: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def infer(
+        self,
+        inputs: Tensor,
+        input_lengths: Tensor,
+        states: DecoderStates | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates]:
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
         encoder_outputs = self.encoder.infer(embedded_inputs, input_lengths)
-        mel_outputs, gate_outputs, alignments = self.decoder.infer(encoder_outputs, input_lengths)
+        mel_outputs, gate_outputs, alignments, states = self.decoder.infer(encoder_outputs, input_lengths, states)
         mel_outputs_postnet = mel_outputs + self.postnet(mel_outputs)
-        return self.parse_output((mel_outputs, mel_outputs_postnet, gate_outputs, alignments))
+        return self.parse_output((mel_outputs, mel_outputs_postnet, gate_outputs, alignments, states))
 
 
 class Tokenizer:
@@ -1207,7 +1229,12 @@ class TTS:
         self.tokenizer = Tokenizer()
 
     @torch.inference_mode()
-    def generate_mels(self, text: str | list[str], postnet: bool = True) -> Tensor:
+    def generate_mels(
+        self,
+        text: str | list[str],
+        postnet: bool = True,
+        states: DecoderStates | None = None,
+    ) -> tuple[Tensor, DecoderStates]:
         if isinstance(text, str):
             tokens = self.tokenizer(text).unsqueeze(0)
             token_lengths = tokens.new_full((1,), tokens.shape[1], dtype=torch.int32)
@@ -1218,18 +1245,23 @@ class TTS:
             for i, t in enumerate(token_list):
                 token_lengths[i] = t.shape[0]
         tokens, token_lengths = self.device.tensor_to(tokens), self.device.tensor_to(token_lengths)
-        mel_outputs, mel_outputs_postnet, _, _ = self.tacotron.infer(tokens, token_lengths)
-        return mel_outputs_postnet if postnet else mel_outputs
+        mel_outputs, mel_outputs_postnet, _, _, states = self.tacotron.infer(tokens, token_lengths, states)
+        return mel_outputs_postnet if postnet else mel_outputs, states
 
     @torch.inference_mode()
     def generate_wave(self, mels: Tensor) -> Tensor:
         return self.vocoder.infer(mels)
 
     @torch.inference_mode()
-    def generate(self, text: str | list[str], postnet: bool = True) -> Tensor:
-        mels = self.generate_mels(text, postnet=postnet)
+    def generate(
+        self,
+        text: str | list[str],
+        postnet: bool = True,
+        states: DecoderStates | None = None,
+    ) -> tuple[Tensor, DecoderStates]:
+        mels, states = self.generate_mels(text, postnet=postnet, states=states)
         audio = self.generate_wave(mels).squeeze(0)
-        return audio
+        return audio, states
 
 
 def pretrained_tacotron2_tts(vocoder_type: VocoderType = "hifigan", *, device: BaseDevice | None = None) -> TTS:
@@ -1249,8 +1281,8 @@ def test_tacotron_adhoc() -> None:
 
     tts = pretrained_tacotron2_tts()
 
-    def generate_for_text(text: str) -> None:
-        audio = tts.generate(text, postnet=True).cpu()
+    def generate_for_text(texts: Iterable[str]) -> None:
+        audio, _ = tts.generate(text, postnet=True).cpu()
 
         if args.out_file is None:
             try:

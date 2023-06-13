@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from ml.core.config import conf_field
-from ml.models.lora import lora
+from ml.models.lora import lora, maybe_lora
 from ml.utils.checkpoint import ensure_downloaded, get_state_dict_prefix
 
 WAVEGLOW_CKPT_FP16 = "https://api.ngc.nvidia.com/v2/models/nvidia/waveglow_ckpt_amp/versions/19.09.0/files/nvidia_waveglowpyt_fp16_20190427"
@@ -120,7 +120,7 @@ class WaveNet(nn.Module):
 
         start = nn.Conv1d(n_in_channels, config.n_channels, 1)
         start = nn.utils.weight_norm(start, name="weight")
-        self.start = start if lora_rank is None else lora(start, r=lora_rank)
+        self.start = maybe_lora(start, lora_rank)
 
         # Initializing last layer to 0 makes the affine coupling layers
         # do nothing at first.  This helps with training stability
@@ -128,7 +128,7 @@ class WaveNet(nn.Module):
         end.weight.data.zero_()
         if end.bias is not None:
             end.bias.data.zero_()
-        self.end = end if lora_rank is None else lora(end, r=lora_rank)
+        self.end = maybe_lora(end, lora_rank)
 
         for i in range(config.n_layers):
             dilation = 2**i
@@ -137,12 +137,12 @@ class WaveNet(nn.Module):
                 config.n_channels, 2 * config.n_channels, config.kernel_size, dilation=dilation, padding=padding
             )
             in_layer = nn.utils.weight_norm(in_layer, name="weight")
-            in_layer = in_layer if lora_rank is None else lora(in_layer, r=lora_rank)
+            in_layer = maybe_lora(in_layer, lora_rank)
             self.in_layers.append(in_layer)
 
             cond_layer = nn.Conv1d(n_mel_channels, 2 * config.n_channels, 1)
             cond_layer = nn.utils.weight_norm(cond_layer, name="weight")
-            cond_layer = cond_layer if lora_rank is None else lora(cond_layer, r=lora_rank)
+            cond_layer = maybe_lora(cond_layer, lora_rank)
             self.cond_layers.append(cond_layer)
 
             # last one is not necessary
@@ -152,7 +152,7 @@ class WaveNet(nn.Module):
                 res_skip_channels = config.n_channels
             res_skip_layer = nn.Conv1d(config.n_channels, res_skip_channels, 1)
             res_skip_layer = nn.utils.weight_norm(res_skip_layer, name="weight")
-            res_skip_layer = res_skip_layer if lora_rank is None else lora(res_skip_layer, r=lora_rank)
+            res_skip_layer = maybe_lora(res_skip_layer, lora_rank)
             self.res_skip_layers.append(res_skip_layer)
 
     def forward(self, audio: Tensor, spect: Tensor) -> Tensor:
