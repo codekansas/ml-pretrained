@@ -49,12 +49,11 @@ import PIL.Image
 import torch
 import torch.nn.functional as F
 import torchvision
-from torch import Tensor, nn
-
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
 from ml.utils.logging import configure_logging
+from torch import Tensor, nn
 
 logger = logging.getLogger(__name__)
 

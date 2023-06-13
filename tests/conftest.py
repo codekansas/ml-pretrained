@@ -5,7 +5,6 @@ import functools
 import pytest
 import torch
 from _pytest.python import Function, Metafunc
-
 from ml.utils.random import set_random_seed as set_random_seed_ml
 
 

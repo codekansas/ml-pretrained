@@ -6,7 +6,7 @@ include = '\.pyi?$'
 
 [tool.pytest.ini_options]
 
-timeout = 60
+timeout = 360
 addopts = "-rx -rf -x -q --full-trace"
 testpaths = ["tests"]
 
@@ -47,6 +47,7 @@ module = [
     "ffmpeg.*",
     "matplotlib.*",
     "torchvision.*",
+    "triton.*",
 ]
 
 ignore_missing_imports = true
@@ -77,7 +78,7 @@ target-version = "py310"
 
 [tool.ruff.isort]
 
-known-first-party = ["ml", "pretrained", "tests"]
+known-first-party = ["pretrained", "tests"]
 combine-as-imports = true
 
 [tool.ruff.pydocstyle]

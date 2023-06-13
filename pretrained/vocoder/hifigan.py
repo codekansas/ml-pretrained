@@ -15,13 +15,12 @@ from typing import TypeVar, cast
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
-from torch.nn.utils import remove_weight_norm, weight_norm
-
 from ml.core.config import conf_field
 from ml.models.lora import SupportedModule as LoraModule, lora
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.timer import Timer
+from torch import Tensor, nn
+from torch.nn.utils import remove_weight_norm, weight_norm
 
 HIFIGAN_CKPT_URL = "https://huggingface.co/jaketae/hifigan-lj-v1/resolve/main/pytorch_model.bin"
 
