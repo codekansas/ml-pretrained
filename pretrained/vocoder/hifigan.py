@@ -256,7 +256,7 @@ def pretrained_hifigan(
     with Timer("initializing model", spinner=True):
         model = HiFiGAN(config)
 
-    with Timer("downloading checkpoint", spinner=True):
+    with Timer("downloading checkpoint"):
         model_path = ensure_downloaded(HIFIGAN_CKPT_URL, "hifigan", "weights_hifigan.pth")
 
     with Timer("loading checkpoint", spinner=True):
