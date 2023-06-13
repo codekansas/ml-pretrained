@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import Tensor
 
-from pretrained.rwkv import _wkv_triton, _wkv_vanilla
+from pretrained.rwkv import _wkv_vanilla
 
 
 def _get_dummy_tensors(bsz: int, tsz: int, chans: int, device: torch.device, dtype: torch.dtype) -> tuple[Tensor, ...]:
@@ -49,6 +49,8 @@ def test_wkv() -> None:
 @pytest.mark.has_gpu()
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_kernel_matches_ref(dtype: torch.dtype) -> None:
+    from pretrained.rwkv import _wkv_triton
+
     bsz, tsz, chans = 2, 7, 16
     w, u, k, v, num, den = _get_dummy_tensors(bsz, tsz, chans, torch.device("cuda"), dtype)
 
@@ -73,6 +75,8 @@ def test_kernel_matches_ref(dtype: torch.dtype) -> None:
 
 @pytest.mark.has_gpu()
 def test_triton_gradients() -> None:
+    from pretrained.rwkv import _wkv_triton
+
     bsz, tsz, chans = 2, 7, 16
     w, u, k, v, num, den = _get_dummy_tensors(bsz, tsz, chans, torch.device("cuda"), torch.float32)
 
