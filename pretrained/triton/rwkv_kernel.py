@@ -373,5 +373,5 @@ class _WKV(Function):
         raise NotImplementedError
 
 
-def triton_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> Tensor:
+def triton_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     return _WKV.apply(w, u, k, v, num, den)
