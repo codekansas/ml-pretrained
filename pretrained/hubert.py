@@ -507,7 +507,7 @@ class HubertPredictor:
             for start in range(0, x.size(1), chunk_size):
                 x_chunk = x[:, start : start + chunk_size]
                 feat_chunk = self.model.forward(x_chunk, causal=causal, output_layer=output_layer)
-                feat.append(feat_chunk)
+                feat.append(feat_chunk.cpu())
 
         return torch.cat(feat, 1).squeeze(0)
 
@@ -553,7 +553,7 @@ class HubertPredictor:
                 x = x.view(1, -1)
 
                 feat_chunk = self.model.forward(x, causal=causal, output_layer=output_layer)
-                feat.append(feat_chunk)
+                feat.append(feat_chunk.cpu())
 
         return torch.cat(feat, 1).squeeze(0)
 
