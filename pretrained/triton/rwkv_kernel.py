@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def, override"
 # ruff: noqa: ANN001, ANN201, ANN202, N803, N806
 """Defines a Triton kernel for the RWKV forward and backward passes.
 

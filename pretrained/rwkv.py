@@ -157,7 +157,7 @@ def _wkv_vanilla(
     return torch.cat(outs, 1), num, den
 
 
-def get_wkv_fn() -> Callable[[tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]], tuple[Tensor, Tensor, Tensor]]:
+def get_wkv_fn() -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor], tuple[Tensor, Tensor, Tensor]]:
     """Returns the WKV function to use.
 
     The function takes six tensors as input, and returns three tensors as
