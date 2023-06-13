@@ -382,7 +382,7 @@ class HubertEncoderStableLayerNorm(nn.Module):
         layers = [HubertEncoderLayerStableLayerNorm(config) for _ in range(config.num_hidden_layers)]
         self.layers = cast(list[HubertEncoderLayerStableLayerNorm], nn.ModuleList(layers))
 
-    def forward(self, hidden_states: Tensor, causal: bool = False, output_layer: int | None = None) -> Tensor:
+    def forward(self, hidden_states: Tensor, causal: bool = False, output_layer: int | float | None = None) -> Tensor:
         position_embeddings = self.pos_conv_embed(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.dropout(hidden_states)
@@ -409,7 +409,12 @@ class Hubert(nn.Module):
         self.feature_projection = HubertFeatureProjection(config)
         self.encoder = HubertEncoderStableLayerNorm(config) if config.do_stable_layer_norm else HubertEncoder(config)
 
-    def forward(self, input_values: Tensor | None, causal: bool = False, output_layer: int | None = None) -> Tensor:
+    def forward(
+        self,
+        input_values: Tensor | None,
+        causal: bool = False,
+        output_layer: int | float | None = None,
+    ) -> Tensor:
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(1, 2)
         hidden_states = self.feature_projection(extract_features)
@@ -438,13 +443,22 @@ class HubertPredictor:
         self.model = hubert_model.eval()
         self.device.module_to(self.model)
 
-    def predict(self, waveform: np.ndarray | Tensor, output_layer: int | None = None, causal: bool = False) -> Tensor:
+    def predict(
+        self,
+        waveform: np.ndarray | Tensor,
+        output_layer: int | float | None = None,
+        causal: bool = False,
+    ) -> Tensor:
         """Gets the hidden states for the given waveform.
 
         Args:
             waveform: The waveform to get hidden states for, with shape (B, T)
             output_layer: The layer to get hidden states from. If `None`, will
-                return the hidden states from the last layer.
+                return the hidden states from the last layer. If an `int`, will
+                return the hidden states from that layer. If a `float`, will
+                return the hidden states from the layer at that percentage of
+                the model. For example, `0.5` will return the hidden states
+                from the middle layer. Negative values will wrap around.
             causal: If set, use a causal attention mask.
 
         Returns:
@@ -457,7 +471,7 @@ class HubertPredictor:
         self,
         waveform: Tensor | np.ndarray,
         chunk_size: int,
-        output_layer: int | None = None,
+        output_layer: int | float | None = None,
         causal: bool = False,
     ) -> Tensor:
         """Gets the hidden states for the given waveform, in chunks.
@@ -470,7 +484,11 @@ class HubertPredictor:
             waveform: The waveform to get hidden states for, with shape (B, T)
             chunk_size: The size of each chunk to process.
             output_layer: The layer to get hidden states from. If `None`, will
-                return the hidden states from the last layer.
+                return the hidden states from the last layer. If an `int`, will
+                return the hidden states from that layer. If a `float`, will
+                return the hidden states from the layer at that percentage of
+                the model. For example, `0.5` will return the hidden states
+                from the middle layer. Negative values will wrap around.
             causal: If set, use a causal attention mask.
 
         Returns:
