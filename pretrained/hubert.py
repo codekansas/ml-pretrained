@@ -211,12 +211,12 @@ class HubertEncoder(nn.Module):
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
-
+        if output_layer is not None and output_layer < 0:
+            output_layer += len(self.layers)
         for i, layer in enumerate(self.layers):
             hidden_states = layer.forward(hidden_states, causal=causal)
             if output_layer is not None and i == output_layer:
                 break
-
         return hidden_states
 
 
@@ -376,6 +376,8 @@ class HubertEncoderStableLayerNorm(nn.Module):
         position_embeddings = self.pos_conv_embed(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.dropout(hidden_states)
+        if output_layer is not None and output_layer < 0:
+            output_layer += len(self.layers)
         for i, layer in enumerate(self.layers):
             hidden_states = layer.forward(hidden_states, causal=causal)
             if output_layer is not None and i == output_layer:
