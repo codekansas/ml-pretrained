@@ -22,7 +22,6 @@ The choices for the model key are:
 """
 
 import argparse
-import functools
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
@@ -68,31 +67,6 @@ class HubertConfig:
     @property
     def num_feat_extract_layers(self) -> int:
         return len(self.conv_dim)
-
-
-class _MaskBuilder:
-    def __init__(self, device: torch.device, dtype: torch.dtype) -> None:
-        self.mask = self._get_mask_impl(device, dtype, 1)
-
-    def __call__(self, tsz: int) -> Tensor:
-        if self.mask.shape[0] < tsz:
-            self.mask = self._get_mask_impl(self.mask.device, self.mask.dtype, tsz)
-        return self.mask[:tsz, :tsz]
-
-    @staticmethod
-    def _get_mask_impl(device: torch.device, dtype: torch.dtype, tsz: int) -> Tensor:
-        mask = torch.full((1, 1, tsz, tsz), float("-inf"), device=device, dtype=dtype)
-        mask = torch.triu(mask, diagonal=1)
-        return mask
-
-    @functools.lru_cache()
-    @staticmethod
-    def get(device: torch.device, dtype: torch.dtype) -> "_MaskBuilder":
-        return _MaskBuilder(device, dtype)
-
-
-def get_mask(device: torch.device, dtype: torch.dtype, tsz: int) -> Tensor:
-    return _MaskBuilder.get(device, dtype)(tsz)
 
 
 class HubertSamePadLayer(nn.Module):
@@ -210,7 +184,7 @@ class HubertEncoderLayer(nn.Module):
 
     def forward(self, hidden_states: Tensor, causal: bool = False) -> Tensor:
         attn_residual = hidden_states
-        hidden_states = self.attention(hidden_states, causal=causal)
+        hidden_states = self.attention.forward(hidden_states, causal=causal)
         hidden_states = self.dropout(hidden_states)
         hidden_states = attn_residual + hidden_states
 
@@ -228,17 +202,18 @@ class HubertEncoder(nn.Module):
         self.pos_conv_embed = HubertPositionalConvEmbedding(config)
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout)
-        self.layers = nn.ModuleList([HubertEncoderLayer(config) for _ in range(config.num_hidden_layers)])
+        layers = nn.ModuleList([HubertEncoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers = cast(list[HubertEncoderLayer], layers)
         self.gradient_checkpointing = False
 
     def forward(self, hidden_states: Tensor, causal: bool = False, output_layer: int | None = None) -> Tensor:
-        position_embeddings = self.pos_conv_embed(hidden_states)
+        position_embeddings = self.pos_conv_embed.forward(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, causal=causal)
+            hidden_states = layer.forward(hidden_states, causal=causal)
             if output_layer is not None and i == output_layer:
                 break
 
@@ -380,10 +355,10 @@ class HubertEncoderLayerStableLayerNorm(nn.Module):
     def forward(self, hidden_states: Tensor, causal: bool = False) -> Tensor:
         attn_residual = hidden_states
         hidden_states = self.layer_norm(hidden_states)
-        hidden_states = self.attention(hidden_states, causal=causal)
+        hidden_states = self.attention.forward(hidden_states, causal=causal)
         hidden_states = self.dropout(hidden_states)
         hidden_states = attn_residual + hidden_states
-        hidden_states = hidden_states + self.feed_forward(self.final_layer_norm(hidden_states))
+        hidden_states = hidden_states + self.feed_forward.forward(self.final_layer_norm(hidden_states))
         return hidden_states
 
 
@@ -395,14 +370,14 @@ class HubertEncoderStableLayerNorm(nn.Module):
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout)
         layers = [HubertEncoderLayerStableLayerNorm(config) for _ in range(config.num_hidden_layers)]
-        self.layers = nn.ModuleList(layers)
+        self.layers = cast(list[HubertEncoderLayerStableLayerNorm], nn.ModuleList(layers))
 
     def forward(self, hidden_states: Tensor, causal: bool = False, output_layer: int | None = None) -> Tensor:
         position_embeddings = self.pos_conv_embed(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.dropout(hidden_states)
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, causal=causal)
+            hidden_states = layer.forward(hidden_states, causal=causal)
             if output_layer is not None and i == output_layer:
                 break
         hidden_states = self.layer_norm(hidden_states)
@@ -427,7 +402,7 @@ class Hubert(nn.Module):
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(1, 2)
         hidden_states = self.feature_projection(extract_features)
-        hidden_states = self.encoder(hidden_states, causal=causal, output_layer=output_layer)
+        hidden_states = self.encoder.forward(hidden_states, causal=causal, output_layer=output_layer)
         return hidden_states
 
     def predictor(self, *, device: BaseDevice | None = None) -> "HubertPredictor":
@@ -500,7 +475,6 @@ class HubertPredictor:
             feat = []
             for start in range(0, x.size(1), chunk_size):
                 x_chunk = x[:, start : start + chunk_size]
-                get_mask(x_chunk.device, x_chunk.dtype, x_chunk.shape[1]) if self.causal else None
                 feat_chunk = self.model.forward(x_chunk, causal=causal, output_layer=output_layer)
                 feat.append(feat_chunk)
 
