@@ -100,6 +100,102 @@ def _forward(
 
 
 @triton.jit
+def _forward_kernel_2(
+    w_ptr,
+    u_ptr,
+    k_ptr,
+    v_ptr,
+    num_ptr,
+    den_ptr,
+    chans,
+    tsz,
+    out_ptr,
+    num_out_ptr,
+    den_out_ptr,
+):
+    # Parallelize over the batch and channel dimensions.
+    b_idx = tl.program_id(0)
+    c_idx = tl.program_id(1)
+
+    chans_tsz = chans * tsz
+
+    # Pointers to the batch (and possibly channel) for the input tensors.
+    k_ptr = k_ptr + b_idx * chans_tsz + c_idx
+    v_ptr = v_ptr + b_idx * chans_tsz + c_idx
+    num_ptr = num_ptr + b_idx * chans + c_idx
+    den_ptr = den_ptr + b_idx * chans + c_idx
+    w_ptr = w_ptr + c_idx
+    u_ptr = u_ptr + c_idx
+
+    # Pointers to the batch (and possibly channel) for the output tensors.
+    out_ptr = out_ptr + b_idx * chans_tsz + c_idx
+    num_out_ptr = num_out_ptr + b_idx * chans + c_idx
+    den_out_ptr = den_out_ptr + b_idx * chans + c_idx
+
+    # Loads parameters.
+    num = tl.load(num_ptr).to(tl.float32)
+    den = tl.load(den_ptr).to(tl.float32)
+    w = tl.load(w_ptr).to(tl.float32)
+    w = -tl.exp(w)
+    u = tl.load(u_ptr).to(tl.float32)
+
+    o = -1e38
+
+    for t in range(tsz):
+        tc = t * chans
+
+        kt = tl.load(k_ptr + tc).to(tl.float32)
+        vt = tl.load(v_ptr + tc).to(tl.float32)
+
+        no = tl.maximum(o, u + kt)
+        A = tl.exp(o - no)
+        B = tl.exp(u + kt - no)
+        tl.store(out_ptr + tc, (A * num + B * vt) / (A * den + B))
+
+        no = tl.maximum(w + o, kt)
+        A = tl.exp(w + o - no)
+        B = tl.exp(kt - no)
+        num = A * num + B * vt
+        den = A * den + B
+        o = no
+
+    tl.store(num_out_ptr, num)
+    tl.store(den_out_ptr, den)
+
+
+def _forward_2(
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    num: Tensor,
+    den: Tensor,
+) -> tuple[Tensor, Tensor, Tensor]:
+    bsz, tsz, chans = k.shape
+
+    # New tensors to output.
+    out = k.new_empty(bsz, tsz, chans)
+    num_out = k.new_empty(bsz, 1, chans)
+    den_out = k.new_empty(bsz, 1, chans)
+
+    _forward_kernel_2[(bsz, chans)](
+        w,
+        u,
+        k,
+        v,
+        num,
+        den,
+        chans,
+        tsz,
+        out,
+        num_out,
+        den_out,
+    )
+
+    return out, num_out, den_out
+
+
+@triton.jit
 def _backward_kernel(
     w_ptr,
     u_ptr,
@@ -242,7 +338,8 @@ class _WKV(Function):
         for t in (v, num, den, w, u):
             assert t.dtype == dtype and t.device == device
 
-        out, num_out, den_out = _forward(w, u, k, v, num, den)
+        # out, num_out, den_out = _forward(w, u, k, v, num, den)
+        out, num_out, den_out = _forward_2(w, u, k, v, num, den)
         ctx.save_for_backward(w, u, k, v, out, num_out, den_out)
 
         return out, num_out, den_out

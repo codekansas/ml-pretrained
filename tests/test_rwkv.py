@@ -31,7 +31,7 @@ def _copy_with_grad(*t: Tensor) -> tuple[Tensor, ...]:
 
 def test_wkv() -> None:
     bsz, tsz, chans = 2, 7, 16
-    w, u, k, v, num, den = _get_dummy_tensors(bsz, tsz, chans, torch.cpu, torch.float32)
+    w, u, k, v, num, den = _get_dummy_tensors(bsz, tsz, chans, torch.device("cpu"), torch.float32)
 
     # Runs in full mode.
     out_full, _, _ = _wkv_vanilla(w, u, k, v, num, den)
