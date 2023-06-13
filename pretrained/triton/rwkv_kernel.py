@@ -1,5 +1,10 @@
 # ruff: noqa: ANN001, ANN201, ANN202, N803, N806
-"""Defines a Triton kernel for the RWKV forward and backward passes."""
+"""Defines a Triton kernel for the RWKV forward and backward passes.
+
+This kernel is used to make the WKV computation in the attention layer run
+faster while using less memory. It requires that ``triton`` is installed, which
+in turn requires a ``triton``-compatible GPU and CUDA version.
+"""
 
 import triton
 import triton.language as tl
@@ -142,23 +147,20 @@ def _backward_kernel(
     gden_ptr = gden_ptr + b_idx * chans + c_idx
 
     # Loads parameters.
-    num_out = tl.load(num_out_ptr).to(tl.float32)
-    den_out = tl.load(den_out_ptr).to(tl.float32)
+    tl.load(num_out_ptr).to(tl.float32)
+    tl.load(den_out_ptr).to(tl.float32)
     gnum = tl.load(gnum_out_ptr).to(tl.float32)
     gden = tl.load(gden_out_ptr).to(tl.float32)
     w = -tl.exp(tl.load(w_ptr).to(tl.float32))
-    ew = tl.exp(w)
+    tl.exp(w)
     u = tl.load(u_ptr).to(tl.float32)
 
     for t in range(tsz - 1, -1, -1):
-        gout = tl.load(gout_ptr + t * chans).to(tl.float32)
+        tl.load(gout_ptr + t * chans).to(tl.float32)
         kt = tl.load(k_ptr + t * chans).to(tl.float32)
-        vt = tl.load(v_ptr + t * chans).to(tl.float32)
-        ek = tl.exp(kt)
-        euk = tl.exp(u + kt)
-
-        gnum = (gnum * ew) + gout / (den_out + euk)
-        gden = (gden * ew) - (euk * gout) / (den_out + euk)
+        tl.load(v_ptr + t * chans).to(tl.float32)
+        tl.exp(kt)
+        tl.exp(u + kt)
 
     tl.store(gnum_ptr, gnum)
     tl.store(gden_ptr, gden)
@@ -181,10 +183,10 @@ def _backward(
     # New tensors to output.
     gw = k.new_empty(chans)
     gu = k.new_empty(chans)
-    gk = k.new_empty(bsz, chans, tsz)
-    gv = k.new_empty(bsz, chans, tsz)
-    gnum = k.new_empty(bsz, chans)
-    gden = k.new_empty(bsz, chans)
+    gk = k.new_empty(bsz, tsz, chans)
+    gv = k.new_empty(bsz, tsz, chans)
+    gnum = k.new_empty(bsz, 1, chans)
+    gden = k.new_empty(bsz, 1, chans)
 
     _backward_kernel[(bsz, chans)](
         w,

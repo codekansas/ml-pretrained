@@ -130,7 +130,7 @@ def _wkv_vanilla(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: T
     outs = []
 
     for t in range(tsz):
-        kt, vt = k[:, t:t + 1], v[:, t:t + 1]  # (B, 1, D), (B, 1, D)
+        kt, vt = k[:, t : t + 1], v[:, t : t + 1]  # (B, 1, D), (B, 1, D)
         ek = torch.exp(kt)  # (B, 1, D)
         euk = torch.exp(u + kt)  # (B, 1, D)
         out = (num + euk * vt) / (den + euk)  # (B, 1, D)
