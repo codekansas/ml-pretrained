@@ -540,7 +540,7 @@ class HubertPredictor:
         output_layer: int | float | None = None,
         causal: bool = False,
         *,
-        reader: Reader = "av",
+        reader: Reader = "sf",
     ) -> Tensor:
         """Gets the hidden states for the given audio file, in chunks.
 
@@ -559,7 +559,7 @@ class HubertPredictor:
         Returns:
             The hidden states for the given waveform, with shape (B, T, D)
         """
-        props = get_audio_props(path)
+        props = get_audio_props(path, reader=reader)
         effects: list[tuple[str, str]] = [("gain", "-n"), ("channels", "1")]
         if props.sample_rate != self.sample_rate:
             effects.append(("rate", str(self.sample_rate)))
