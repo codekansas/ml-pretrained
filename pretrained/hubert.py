@@ -38,6 +38,7 @@ from ml.utils.device.base import BaseDevice
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
+from ml.models.kmeans import KMeans
 
 PretrainedHubertSize = Literal["base", "large", "extra_large"]
 
@@ -423,12 +424,23 @@ class Hubert(nn.Module):
         hidden_states = self.encoder.forward(hidden_states, causal=causal, output_layer=output_layer)
         return hidden_states
 
-    def predictor(self, *, device: BaseDevice | None = None) -> "HubertPredictor":
-        return HubertPredictor(self, device=device)
+    def predictor(
+        self,
+        kmeans: KMeans | None = None,
+        *,
+        device: BaseDevice | None = None,
+    ) -> "HubertPredictor":
+        return HubertPredictor(self, kmeans, device=device)
 
 
 class HubertPredictor:
-    def __init__(self, hubert_model: Hubert, *, device: BaseDevice | None = None) -> None:
+    def __init__(
+        self,
+        hubert_model: Hubert,
+        kmeans: KMeans | None = None,
+        *,
+        device: BaseDevice | None = None,
+    ) -> None:
         """Provides an API for doing predictoins with a HuBERT model.
 
         Note that this module is not an `nn.Module`, so you can use it in your
@@ -436,6 +448,8 @@ class HubertPredictor:
 
         Args:
             hubert_model: The HuBERT model to use for predictions.
+            kmeans: The kmeans model to use for quantization. If `None`, don't
+                quantize.
             device: The device to use for predictions. If `None`, will use the
                 device returned by AutoDevice.detect_device().
         """
@@ -443,7 +457,10 @@ class HubertPredictor:
 
         self.device = AutoDevice.detect_device() if device is None else device
         self.model = hubert_model.eval()
+        self.kmeans = kmeans.eval() if kmeans is not None else None
         self.device.module_to(self.model)
+        if self.kmeans is not None:
+            self.device.module_to(self.kmeans)
         self.sample_rate = 16_000  # True for all HuBERT models.
 
     def predict(
@@ -468,7 +485,10 @@ class HubertPredictor:
             The hidden states for the given waveform, with shape (B, T, D)
         """
         waveform = self.device.tensor_to(waveform)
-        return self.model.forward(waveform, causal=causal, output_layer=output_layer)
+        features = self.model.forward(waveform, causal=causal, output_layer=output_layer)
+        if self.kmeans is not None:
+            features = self.kmeans.forward(features)
+        return features
 
     def predict_in_chunks(
         self,
@@ -507,6 +527,8 @@ class HubertPredictor:
             for start in range(0, x.size(1), chunk_size):
                 x_chunk = x[:, start : start + chunk_size]
                 feat_chunk = self.model.forward(x_chunk, causal=causal, output_layer=output_layer)
+                if self.kmeans is not None:
+                    feat_chunk = self.kmeans.forward(feat_chunk)
                 feat.append(feat_chunk.cpu())
 
         return torch.cat(feat, 1).squeeze(0)
@@ -552,12 +574,16 @@ class HubertPredictor:
                 reader=reader,
             ):
                 waveform_chunk, _ = ta_sox.apply_effects_tensor(waveform_chunk, props.sample_rate, effects)
+                chans, _ = waveform_chunk.shape
+                assert chans == 1, f"Expected mono-channel audio, got {chans} channels"
                 x = self.device.tensor_to(torch.from_numpy(waveform_chunk))
 
                 if self.model.pre_normalize:
                     x = F.layer_norm(x, x.shape)
 
                 feat_chunk = self.model.forward(x, causal=causal, output_layer=output_layer)
+                if self.kmeans is not None:
+                    feat_chunk = self.kmeans.forward(feat_chunk)
                 feat.append(feat_chunk.cpu())
 
         return torch.cat(feat, 1).squeeze(0)
