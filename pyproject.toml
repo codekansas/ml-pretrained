@@ -46,6 +46,7 @@ module = [
     "cv2.*",
     "ffmpeg.*",
     "matplotlib.*",
+    "torchaudio.*",
     "torchvision.*",
     "triton.*",
 ]
