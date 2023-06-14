@@ -31,6 +31,7 @@ import torch
 import torch.nn.functional as F
 import torchaudio.sox_effects as ta_sox
 from ml.models.activations import ActivationType, get_activation
+from ml.models.kmeans import KMeans
 from ml.utils.audio import Reader, get_audio_props, read_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -38,7 +39,6 @@ from ml.utils.device.base import BaseDevice
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
-from ml.models.kmeans import KMeans
 
 PretrainedHubertSize = Literal["base", "large", "extra_large"]
 
