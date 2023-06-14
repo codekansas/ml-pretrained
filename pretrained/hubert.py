@@ -496,12 +496,11 @@ class HubertPredictor:
         Returns:
             The hidden states for the given waveform, with shape (B, T, D)
         """
-        with torch.inference_mode():
+        with torch.inference_mode(), self.device.autocast_context():
             x = self.device.tensor_to(waveform)  # Loads entire waveform into device memory.
 
             if self.model.pre_normalize:
                 x = F.layer_norm(x, x.shape)
-            x = x.view(1, -1)
 
             feat = []
             for start in range(0, x.size(1), chunk_size):
@@ -538,7 +537,7 @@ class HubertPredictor:
             The hidden states for the given waveform, with shape (B, T, D)
         """
         chunk_length = round(chunk_length_sec * self.sample_rate)
-        with torch.inference_mode():
+        with torch.inference_mode(), self.device.autocast_context():
             feat = []
             for waveform_chunk in read_audio(
                 path,
@@ -546,11 +545,12 @@ class HubertPredictor:
                 sampling_rate=self.sample_rate,
                 reader=reader,
             ):
-                assert waveform_chunk.shape[0] == 1, "Expected mono-channel audio."
-                x = self.device.tensor_to(torch.from_numpy(waveform_chunk[0]))
+                chans, _ = waveform_chunk.shape
+                assert chans == 1, f"Expected mono-channel audio, got {chans} channels"
+                x = self.device.tensor_to(torch.from_numpy(waveform_chunk))
+
                 if self.model.pre_normalize:
                     x = F.layer_norm(x, x.shape)
-                x = x.view(1, -1)
 
                 feat_chunk = self.model.forward(x, causal=causal, output_layer=output_layer)
                 feat.append(feat_chunk.cpu())
