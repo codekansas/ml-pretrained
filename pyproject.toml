@@ -42,13 +42,8 @@ disable_error_code = ["attr-defined"]
 [[tool.mypy.overrides]]
 
 module = [
-    "av.*",
-    "cv2.*",
-    "ffmpeg.*",
-    "matplotlib.*",
     "torchaudio.*",
     "torchvision.*",
-    "triton.*",
 ]
 
 ignore_missing_imports = true
