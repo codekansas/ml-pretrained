@@ -573,10 +573,11 @@ class HubertPredictor:
                 sampling_rate=self.sample_rate,
                 reader=reader,
             ):
-                waveform_chunk, _ = ta_sox.apply_effects_tensor(waveform_chunk, props.sample_rate, effects)
-                chans, _ = waveform_chunk.shape
+                waveform_tensor = torch.from_numpy(waveform_chunk)
+                waveform_tensor, _ = ta_sox.apply_effects_tensor(waveform_tensor, props.sample_rate, effects)
+                chans, _ = waveform_tensor.shape
                 assert chans == 1, f"Expected mono-channel audio, got {chans} channels"
-                x = self.device.tensor_to(torch.from_numpy(waveform_chunk))
+                x = self.device.tensor_to(waveform_tensor)
 
                 if self.model.pre_normalize:
                     x = F.layer_norm(x, x.shape)
