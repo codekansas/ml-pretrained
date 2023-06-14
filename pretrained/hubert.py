@@ -29,8 +29,9 @@ from typing import Literal, cast, get_args
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchaudio.sox_effects as ta_sox
 from ml.models.activations import ActivationType, get_activation
-from ml.utils.audio import Reader, read_audio
+from ml.utils.audio import Reader, get_audio_props, read_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
@@ -536,6 +537,11 @@ class HubertPredictor:
         Returns:
             The hidden states for the given waveform, with shape (B, T, D)
         """
+        props = get_audio_props(path)
+        effects: list[tuple[str, str]] = [("gain", "-n"), ("channels", "1")]
+        if props.sample_rate != self.sample_rate:
+            effects.append(("rate", str(self.sample_rate)))
+
         chunk_length = round(chunk_length_sec * self.sample_rate)
         with torch.inference_mode(), self.device.autocast_context():
             feat = []
@@ -545,8 +551,7 @@ class HubertPredictor:
                 sampling_rate=self.sample_rate,
                 reader=reader,
             ):
-                chans, _ = waveform_chunk.shape
-                assert chans == 1, f"Expected mono-channel audio, got {chans} channels"
+                waveform_chunk, _ = ta_sox.apply_effects_tensor(waveform_chunk, props.sample_rate, effects)
                 x = self.device.tensor_to(torch.from_numpy(waveform_chunk))
 
                 if self.model.pre_normalize:
