@@ -1,4 +1,4 @@
-"""Defines a simpl API for using Meta's pretrained Hubert model.
+"""Defines a simple API for using Meta's pretrained Hubert model.
 
 .. highlight:: python
 .. code-block:: python
