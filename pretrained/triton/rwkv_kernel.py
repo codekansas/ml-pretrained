@@ -10,7 +10,7 @@ in turn requires a ``triton``-compatible GPU and CUDA version.
 import triton
 import triton.language as tl
 from torch import Tensor
-from torch.autograd.function import Function, FunctionCtx
+from torch.autograd.function import Function, FunctionCtx, once_differentiable
 
 
 @triton.jit
@@ -107,17 +107,17 @@ def _forward(
 
 @triton.jit
 def _forward_kernel_2(
-    w_ptr,
-    u_ptr,
-    k_ptr,
-    v_ptr,
-    num_ptr,
-    den_ptr,
+    w_ptr,  # (C)
+    u_ptr,  # (C)
+    k_ptr,  # (B, T, C)
+    v_ptr,  # (B, T, C)
+    alpha_ptr,  # (B, C)
+    beta_ptr,  # (B, C)
     chans,
     tsz,
-    out_ptr,
-    num_out_ptr,
-    den_out_ptr,
+    out_ptr,  # (B, T, C)
+    num_out_ptr,  # (B, C)
+    den_out_ptr,  # (B, C)
 ):
     # Parallelize over the batch and channel dimensions.
     b_idx = tl.program_id(0)
@@ -128,8 +128,8 @@ def _forward_kernel_2(
     # Pointers to the batch (and possibly channel) for the input tensors.
     k_ptr = k_ptr + b_idx * chans_tsz + c_idx
     v_ptr = v_ptr + b_idx * chans_tsz + c_idx
-    num_ptr = num_ptr + b_idx * chans + c_idx
-    den_ptr = den_ptr + b_idx * chans + c_idx
+    alpha_ptr = alpha_ptr + b_idx * chans + c_idx
+    beta_ptr = beta_ptr + b_idx * chans + c_idx
     w_ptr = w_ptr + c_idx
     u_ptr = u_ptr + c_idx
 
@@ -139,12 +139,12 @@ def _forward_kernel_2(
     den_out_ptr = den_out_ptr + b_idx * chans + c_idx
 
     # Loads parameters.
-    num = tl.load(num_ptr).to(tl.float32)
-    den = tl.load(den_ptr).to(tl.float32)
+    alpha = tl.load(alpha_ptr).to(tl.float32)
+    beta = tl.load(beta_ptr).to(tl.float32)
     w = -tl.exp(tl.load(w_ptr).to(tl.float32))
     u = tl.load(u_ptr).to(tl.float32)
 
-    o = -1e38
+    eps = -1e38
 
     for t in range(tsz):
         tc = t * chans
@@ -152,27 +152,27 @@ def _forward_kernel_2(
         kt = tl.load(k_ptr + tc).to(tl.float32)
         vt = tl.load(v_ptr + tc).to(tl.float32)
 
-        no = tl.maximum(o, u + kt)
-        eo = tl.exp(o - no)
+        no = tl.maximum(eps, u + kt)
+        eo = tl.exp(eps - no)
         euk = tl.exp(u + kt - no)
 
-        out = (eo * num + euk * vt) / (eo * den + euk)
+        out = (eo * alpha + euk * vt) / (eo * beta + euk)
         tl.store(out_ptr + tc, out)
 
-        nwo = tl.maximum(w + o, kt)
-        ew = tl.exp(w + o - nwo)
+        nwo = tl.maximum(w + eps, kt)
+        ew = tl.exp(w + eps - nwo)
         ek = tl.exp(kt - nwo)
-        num = ew * num + ek * vt
-        den = ew * den + ek
+        alpha = ew * alpha + ek * vt
+        beta = ew * beta + ek
 
-        o = nwo
+        eps = nwo
 
-    ew = tl.exp(o)
-    num = ew * num
-    den = ew * den
+    ew = tl.exp(eps)
+    alpha = ew * alpha
+    beta = ew * beta
 
-    tl.store(num_out_ptr, num)
-    tl.store(den_out_ptr, den)
+    tl.store(num_out_ptr, alpha)
+    tl.store(den_out_ptr, beta)
 
 
 def _forward_2(
@@ -368,6 +368,7 @@ class _WKV(Function):
         return out, num_out, den_out
 
     @staticmethod
+    @once_differentiable
     def backward(ctx: FunctionCtx, gout: Tensor, gnum_out: Tensor, gden_out: Tensor) -> tuple[Tensor, ...]:
         # w, u, k, v, out, num_out, den_out = ctx.saved_tensors
         # gw, gu, gk, gv, gn, gd = _backward(w, u, k, v, out, num_out, den_out, gout, gnum_out, gden_out)
