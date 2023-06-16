@@ -180,31 +180,34 @@ def _forward_2(
     u: Tensor,
     k: Tensor,
     v: Tensor,
-    num: Tensor,
-    den: Tensor,
-) -> tuple[Tensor, Tensor, Tensor]:
+    alpha: Tensor,
+    beta: Tensor,
+    eps: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     bsz, tsz, chans = k.shape
 
     # New tensors to output.
     out = k.new_empty(bsz, tsz, chans)
-    num_out = k.new_empty(bsz, 1, chans)
-    den_out = k.new_empty(bsz, 1, chans)
+    alpha_out = k.new_empty(bsz, 1, chans)
+    beta_out = k.new_empty(bsz, 1, chans)
+    eps_out: k.new_empty(bsz, 1, chans)
 
     _forward_kernel_2[(bsz, chans)](
         w,
         u,
         k,
         v,
-        num,
-        den,
+        alpha,
+        beta,
         chans,
         tsz,
         out,
-        num_out,
-        den_out,
+        alpha_out,
+        beta_out,
+        eps_out,
     )
 
-    return out, num_out, den_out
+    return out, alpha_out, beta_out, eps_out
 
 
 @triton.jit
@@ -328,9 +331,10 @@ class _WKV(Function):
         u: Tensor,
         k: Tensor,
         v: Tensor,
-        num: Tensor,
-        den: Tensor,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+        alpha: Tensor,
+        beta: Tensor,
+        eps: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         (bsz, tsz, chans), device, dtype = k.shape, k.device, k.dtype
 
         # Performs tensor checks.
@@ -339,7 +343,7 @@ class _WKV(Function):
             assert t.stride(0) == tsz * chans
             assert t.stride(1) == chans
             assert t.size(2) == 1 or t.stride(2) == 1
-        for t in (num, den):
+        for t in (alpha, beta):
             assert t.shape == (bsz, 1, chans)
             assert t.stride(0) == chans
             assert t.stride(1) == chans
@@ -347,7 +351,7 @@ class _WKV(Function):
         for t in (w, u):
             assert t.shape == (chans,)
             assert t.stride(0) == 1
-        for t in (v, num, den, w, u):
+        for t in (v, alpha, beta, w, u):
             assert t.dtype == dtype and t.device == device
 
         # This is some code for testing stuff.
@@ -357,19 +361,25 @@ class _WKV(Function):
         # num.copy_(torch.arange(num.shape[-1])[None, None, :].repeat(num.shape[0], 1, 1))
         # den.copy_(torch.arange(den.shape[-1])[None, None, :].repeat(den.shape[0], 1, 1))
 
-        out, num_out, den_out = _forward(w, u, k, v, num, den)
+        out, alpha_out, beta_out, eps_out = _forward(w, u, k, v, alpha, beta, eps)
         # out2, num_out2, den_out2 = _forward_2(w, u, k, v, num, den)
         # breakpoint()
 
         # out, num_out, den_out = _forward_2(w, u, k, v, num, den)
 
-        ctx.save_for_backward(w, u, k, v, out, num_out, den_out)
+        ctx.save_for_backward(w, u, k, v, out, alpha_out, beta_out, eps_out)
 
-        return out, num_out, den_out
+        return out, alpha_out, beta_out, eps_out
 
     @staticmethod
     @once_differentiable
-    def backward(ctx: FunctionCtx, gout: Tensor, gnum_out: Tensor, gden_out: Tensor) -> tuple[Tensor, ...]:
+    def backward(
+        ctx: FunctionCtx,
+        gout: Tensor,
+        gnum_out: Tensor,
+        gden_out: Tensor,
+        geps_out: None,
+    ) -> tuple[Tensor, ...]:
         # w, u, k, v, out, num_out, den_out = ctx.saved_tensors
         # gw, gu, gk, gv, gn, gd = _backward(w, u, k, v, out, num_out, den_out, gout, gnum_out, gden_out)
         # return gw, gu, gk, gv, gn, gd
@@ -377,5 +387,13 @@ class _WKV(Function):
         raise NotImplementedError
 
 
-def triton_wkv(w: Tensor, u: Tensor, k: Tensor, v: Tensor, num: Tensor, den: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-    return _WKV.apply(w, u, k, v, num, den)
+def triton_wkv(
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    alpha: Tensor,
+    beta: Tensor,
+    eps: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    return _WKV.apply(w, u, k, v, alpha, beta)

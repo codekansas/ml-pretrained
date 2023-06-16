@@ -113,13 +113,64 @@ PRETRAINED_MODEL_SIZES: dict[PretrainedRwkvKey, ModelArgs] = {
 TOKENIZER_URL = "https://raw.githubusercontent.com/BlinkDL/ChatRWKV/main/20B_tokenizer.json"
 
 
+def _wkv_with_eps(
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    alpha: Tensor,
+    beta: Tensor,
+    eps: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Runs the core WKV computation.
+
+    Args:
+        w: The decay tensor, with shape (D)
+        u: The output multiplier tensor, with shape (D)
+        k: The K tensor, with shape (B, T, D)
+        v: The V tensor, with shape (B, T, D)
+        alpha: The last numerator, with shape (B, 1, D)
+        beta: The last denominator, with shape (B, 1, D)
+        eps: The epsilon tensor, with shape (B, 1, D)
+
+    Returns:
+        The WKV tensor, with shape (B, T, D), and the next alpha, beta and
+        epsilon tensors, each with shape (B, 1, D)
+    """
+    assert w.dim() == u.dim() == 1
+    assert k.dim() == v.dim() == alpha.dim() == beta.dim() == 3
+
+    _, tsz, _ = k.shape
+
+    w = -torch.exp(w)  # (D)
+
+    wkvs = []
+
+    for t in range(tsz):
+        kt, vt = k[:, t : t + 1], v[:, t : t + 1]
+        ukt = u + kt
+        tau = torch.maximum(ukt, eps)
+        e1 = torch.exp(eps - tau)
+        e2 = torch.exp(ukt - tau)
+        wkv = (e1 * alpha + e2 * vt) / (e1 * beta + e2)
+        wkvs.append(wkv)
+
+        eps = torch.maximum(w, kt)
+        e1 = torch.exp(w - eps)
+        e2 = torch.exp(kt - eps)
+        alpha = e1 * alpha + e2 * vt
+        beta = e1 * beta + e2
+
+    return torch.cat(wkvs, 1), alpha, beta, eps
+
+
 def _wkv_vanilla(
     w: Tensor,
     u: Tensor,
     k: Tensor,
     v: Tensor,
-    num: Tensor,
-    den: Tensor,
+    alpha: Tensor,
+    beta: Tensor,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Runs the core WKV computation.
 
@@ -128,41 +179,93 @@ def _wkv_vanilla(
         u: The output multiplier tensor, with shape (D)
         k: The K tensor, with shape (B, T, D)
         v: The V tensor, with shape (B, T, D)
-        num: The last numerator, with shape (B, 1, D)
-        den: The last denominator, with shape (B, 1, D)
+        alpha: The last numerator, with shape (B, 1, D)
+        beta: The last denominator, with shape (B, 1, D)
 
     Returns:
-        The WKV tensor, with shape (B, T, D), and the next numerator and
-        denominator tensors, each with shape (B, 1, D)
+        The WKV tensor, with shape (B, T, D), and the next alpha and beta
+        tensors, each with shape (B, 1, D)
     """
     assert w.dim() == u.dim() == 1
-    assert k.dim() == v.dim() == num.dim() == den.dim() == 3
+    assert k.dim() == v.dim() == alpha.dim() == beta.dim() == 3
+
+    _, tsz, _ = k.shape
+
+    ew = torch.exp(-torch.exp(w))
+
+    wkvs = []
+
+    for t in range(tsz):
+        kt, vt = k[:, t : t + 1], v[:, t : t + 1]
+        euk = torch.exp(u + kt)
+        wkv = (alpha + euk * vt) / (beta + euk)
+        wkvs.append(wkv)
+
+        ek = torch.exp(kt)
+        alpha = ew * alpha + ek * vt
+        beta = ew * beta + ek
+
+    return torch.cat(wkvs, 1), alpha, beta
+
+
+def _wkv_log_space(
+    w: Tensor,
+    u: Tensor,
+    k: Tensor,
+    v: Tensor,
+    log_alpha_plus: Tensor,
+    log_alpha_minus: Tensor,
+    log_beta: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Runs the core WKV computation.
+
+    Args:
+        w: The decay tensor, with shape (D)
+        u: The output multiplier tensor, with shape (D)
+        k: The K tensor, with shape (B, T, D)
+        v: The V tensor, with shape (B, T, D)
+        log_alpha_plus: The last positive numerator part, with shape (B, 1, D)
+        log_alpha_minus: The last negative numerator part, with shape (B, 1, D)
+        log_beta: The last denominator, with shape (B, 1, D)
+
+    Returns:
+        The WKV tensor, with shape (B, T, D), and the next alpha plus, alpha
+        minus and beta tensors, each with shape (B, 1, D)
+    """
+    assert w.dim() == u.dim() == 1
+    assert k.dim() == v.dim() == log_alpha_plus.dim() == log_alpha_minus.dim() == log_beta.dim() == 3
 
     _, tsz, _ = k.shape
 
     w = -torch.exp(w)  # (D)
-    ew = torch.exp(w)  # (D)
-
-    outs = []
+    wkvs = []
 
     for t in range(tsz):
-        kt, vt = k[:, t : t + 1], v[:, t : t + 1]  # (B, 1, D), (B, 1, D)
-        ek = torch.exp(kt)  # (B, 1, D)
-        euk = torch.exp(u + kt)  # (B, 1, D)
-        out = (num + euk * vt) / (den + euk)  # (B, 1, D)
-        num = ew * num + ek * vt  # (B, 1, D)
-        den = ew * den + ek  # (B, 1, D)
-        outs.append(out)
+        kt, vt = k[:, t : t + 1], v[:, t : t + 1]
+        v_plus = torch.clamp(vt, min=0) + 1e-9
+        v_minus = torch.clamp(-vt, min=0) + 1e-9
+        log_v_plus = torch.log(v_plus)
+        log_v_minus = torch.log(v_minus)
 
-    return torch.cat(outs, 1), num, den
+        log_wkv_plus = torch.logaddexp(u + kt + log_v_plus, log_alpha_plus) - torch.logaddexp(u + kt, log_beta)
+        log_wkv_minus = torch.logaddexp(u + kt + log_v_minus, log_alpha_minus) - torch.logaddexp(u + kt, log_beta)
+
+        wkv = torch.exp(log_wkv_plus) - torch.exp(log_wkv_minus)
+        wkvs.append(wkv)
+
+        log_alpha_plus = torch.logaddexp(w + log_alpha_plus, kt + log_v_plus)
+        log_alpha_minus = torch.logaddexp(w + log_alpha_minus, kt + log_v_minus)
+        log_beta = torch.logaddexp(w + log_beta, kt)
+
+    return torch.cat(wkvs, 1), log_alpha_plus, log_alpha_minus, log_beta
 
 
-def get_wkv_fn() -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor], tuple[Tensor, Tensor, Tensor]]:
+def get_wkv_fn() -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor], tuple[Tensor, Tensor, Tensor, Tensor]]:
     """Returns the WKV function to use.
 
     The function takes six tensors as input, and returns three tensors as
-    output. The input tensors are ``w``, ``u``, ``k``, ``v``, ``num``, and
-    ``den``, and the output tensors are ``out``, ``num``, and ``den``.
+    output. The input tensors are ``w``, ``u``, ``k``, ``v``, ``alpha``, and
+    ``beta``, and the output tensors are ``out``, ``alpha``, and ``beta``.
 
     Returns:
         The WKV function to use.
@@ -172,13 +275,14 @@ def get_wkv_fn() -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor], t
 
         return triton_wkv
 
-    return _wkv_vanilla
+    return _wkv_log_space
 
 
 class Attention(nn.Module):
     init_x: Tensor
-    init_num: Tensor
-    init_den: Tensor
+    init_alpha_plus: Tensor
+    init_alpha_minus: Tensor
+    init_beta: Tensor
 
     def __init__(self, emb_dim: int, max_tsz: int = 1024, lora_rank: int | None = None) -> None:
         super().__init__()
@@ -196,8 +300,9 @@ class Attention(nn.Module):
         self.output = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
 
         self.register_buffer("init_x", torch.zeros(1, 1, emb_dim), persistent=False)
-        self.register_buffer("init_num", torch.zeros(1, 1, emb_dim), persistent=False)
-        self.register_buffer("init_den", torch.zeros(1, 1, emb_dim), persistent=False)
+        self.register_buffer("init_alpha_plus", torch.full((1, 1, emb_dim), float("-inf")), persistent=False)
+        self.register_buffer("init_alpha_minus", torch.full((1, 1, emb_dim), float("-inf")), persistent=False)
+        self.register_buffer("init_beta", torch.full((1, 1, emb_dim), float("-inf")), persistent=False)
 
         self.wkv_fn = get_wkv_fn()
 
@@ -212,10 +317,11 @@ class Attention(nn.Module):
 
         if state is None:
             last_x = self.init_x.repeat(bsz, 1, 1)
-            num = self.init_num.repeat(bsz, 1, 1)
-            den = self.init_den.repeat(bsz, 1, 1)
+            log_alpha_p = self.init_alpha_plus.repeat(bsz, 1, 1)
+            log_alpha_m = self.init_alpha_minus.repeat(bsz, 1, 1)
+            log_beta = self.init_beta.repeat(bsz, 1, 1)
         else:
-            last_x, num, den = state
+            last_x, log_alpha_p, log_alpha_m, log_beta = state
         last_x = self.time_shift(last_x, x)
 
         k = self.key(x * self.time_mix_k + last_x * (1 - self.time_mix_k))
@@ -224,10 +330,10 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        wkv, num, den = self.wkv_fn(w, u, k, v, num, den)
+        wkv, log_alpha_p, log_alpha_m, log_beta = self.wkv_fn(w, u, k, v, log_alpha_p, log_alpha_m, log_beta)
         rwkv = wkv * sr
 
-        return self.output(rwkv), (x[..., -1:, :], num, den)
+        return self.output(rwkv), (x[..., -1:, :], log_alpha_p, log_alpha_m, log_beta)
 
 
 class FeedForward(nn.Module):
