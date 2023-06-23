@@ -35,8 +35,6 @@ warn_redundant_casts = true
 incremental = true
 namespace_packages = false
 
-exclude = ["^pretrained/api.py$"]
-
 # For TorchScript stuff.
 disable_error_code = ["attr-defined"]
 
