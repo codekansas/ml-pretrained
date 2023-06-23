@@ -1,5 +1,5 @@
 # mypy: disable-error-code="import, override"
-"""Defines a simple API for using the RWKV model.
+r"""Defines a simple API for using the RWKV model.
 
 This code is adapted from the minimimal implementation
 `here <https://johanwind.github.io/2023/03/23/rwkv_details.html>`_, adapted
@@ -8,7 +8,7 @@ to be fine-tunable.
 .. highlight:: python
 .. code-block:: python
 
-    from pretrained.rwkv import pretrained_rwkv
+    from rwkv.model import pretrained_rwkv
 
     model = pretrained_rwkv("7B")
     predictor = model.predictor()
@@ -26,7 +26,7 @@ Additionally, using the training mode CUDA kernel requires installing ``triton``
 
 .. code-block:: bash
 
-    pip install
+    pip install triton
 
 The choices for the model key are:
 
@@ -39,9 +39,13 @@ The choices for the model key are:
 """
 
 import argparse
+import functools
 import logging
+import os
+import time
+import warnings
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Literal, Sequence, get_args
+from typing import Any, Callable, Iterator, Literal, Sequence, cast, get_args
 
 import torch
 import torch.nn.functional as F
@@ -53,12 +57,13 @@ from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
+from torch.autograd.function import Function, FunctionCtx, once_differentiable
 
 logger = logging.getLogger(__name__)
 
 PretrainedRwkvKey = Literal["169m", "430m", "1.5b", "3b", "7b", "14b"]
 
-AttentionState = tuple[Tensor, Tensor, Tensor]
+AttentionState = tuple[Tensor, Tensor]
 FeedForwardState = Tensor
 State = tuple[AttentionState, FeedForwardState]
 
@@ -113,38 +118,41 @@ PRETRAINED_MODEL_SIZES: dict[PretrainedRwkvKey, ModelArgs] = {
 TOKENIZER_URL = "https://raw.githubusercontent.com/BlinkDL/ChatRWKV/main/20B_tokenizer.json"
 
 
-def _wkv_with_eps(
-    w: Tensor,
-    u: Tensor,
-    k: Tensor,
-    v: Tensor,
-    alpha: Tensor,
-    beta: Tensor,
-    eps: Tensor,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Runs the core WKV computation.
+@functools.lru_cache
+def supports_triton() -> bool:
+    if "USE_TRITON" in os.environ:
+        return os.environ["USE_TRITON"] == "1"
 
-    Args:
-        w: The decay tensor, with shape (D)
-        u: The output multiplier tensor, with shape (D)
-        k: The K tensor, with shape (B, T, D)
-        v: The V tensor, with shape (B, T, D)
-        alpha: The last numerator, with shape (B, 1, D)
-        beta: The last denominator, with shape (B, 1, D)
-        eps: The epsilon tensor, with shape (B, 1, D)
+    if not torch.cuda.is_available():
+        return False
 
-    Returns:
-        The WKV tensor, with shape (B, T, D), and the next alpha, beta and
-        epsilon tensors, each with shape (B, 1, D)
-    """
-    assert w.dim() == u.dim() == 1
-    assert k.dim() == v.dim() == alpha.dim() == beta.dim() == 3
+    try:
+        import triton
+
+        assert triton is not None
+        return True
+    except (ImportError, ModuleNotFoundError):
+        if torch.cuda.is_available():
+            warnings.warn("Triton is not installed, but CUDA is available; install with `pip install triton`")
+        return False
+
+
+@torch.jit.script
+def wkv_with_eps_forward(w: Tensor, u: Tensor, k: Tensor, v: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
+    bsz, tsz, chans = k.shape
+
+    assert w.shape == u.shape == (chans,)
+    assert v.shape == (bsz, tsz, chans)
+    assert state.shape == (bsz, 3, 1, chans)
+
+    alpha, beta, eps = state[:, :, -1].chunk(3, dim=1)  # (B, 1, D), (B, 1, D), (B, 1, D)
 
     _, tsz, _ = k.shape
 
-    w = -torch.exp(w)  # (D)
-
     wkvs = []
+    alphas = [alpha]
+    betas = [beta]
+    epss = [eps]
 
     for t in range(tsz):
         kt, vt = k[:, t : t + 1], v[:, t : t + 1]
@@ -155,23 +163,137 @@ def _wkv_with_eps(
         wkv = (e1 * alpha + e2 * vt) / (e1 * beta + e2)
         wkvs.append(wkv)
 
-        eps = torch.maximum(w, kt)
-        e1 = torch.exp(w - eps)
+        w_eps = w + eps
+        eps = torch.maximum(w_eps, kt)
+        e1 = torch.exp(w_eps - eps)
         e2 = torch.exp(kt - eps)
         alpha = e1 * alpha + e2 * vt
         beta = e1 * beta + e2
 
-    return torch.cat(wkvs, 1), alpha, beta, eps
+        alphas.append(alpha)
+        betas.append(beta)
+        epss.append(eps)
+
+    alpha = torch.stack(alphas, dim=2)
+    beta = torch.stack(betas, dim=2)
+    eps = torch.stack(epss, dim=2)
+
+    return torch.cat(wkvs, 1), torch.cat((alpha, beta, eps), dim=1)
 
 
-def _wkv_vanilla(
+@torch.jit.script
+def wkv_with_eps_backward(
     w: Tensor,
     u: Tensor,
     k: Tensor,
     v: Tensor,
-    alpha: Tensor,
-    beta: Tensor,
-) -> tuple[Tensor, Tensor, Tensor]:
+    state: Tensor,
+    grad_wkv: Tensor,
+    grad_state: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    bsz, tsz, chans = k.shape
+
+    assert w.shape == u.shape == (chans,)
+    assert v.shape == (bsz, tsz, chans)
+    assert state.shape == (bsz, 3, tsz + 1, chans)
+    assert grad_wkv.shape == (bsz, tsz, chans)
+    assert grad_state.shape == (bsz, 3, 1, chans)
+
+    alpha, beta, eps = state.chunk(3, dim=1)  # (B, 1, T + 1, D), (B, 1, T + 1, D), (B, 1, T + 1, D)
+    grad_alpha, grad_beta, grad_eps = grad_state[:, :, 0].chunk(3, dim=1)  # (B, 1, D), (B, 1, D), (B, 1, D)
+    grad_eps = grad_eps.clone()
+
+    grad_w = torch.zeros_like(w)
+    grad_u = torch.zeros_like(u)
+    grad_k = torch.zeros_like(k)
+    grad_v = torch.zeros_like(v)
+
+    for t in range(tsz - 1, -1, -1):
+        kt, vt = k[:, t : t + 1], v[:, t : t + 1]
+        alpha_prev, beta_prev, eps_prev = alpha[:, :, t], beta[:, :, t], eps[:, :, t]
+        alpha_curr, beta_curr, eps_curr = alpha[:, :, t + 1], beta[:, :, t + 1], eps[:, :, t + 1]
+        ukt = u + kt
+        tau = torch.maximum(ukt, eps_prev)
+        e1 = torch.exp(eps_prev - tau)
+        e2 = torch.exp(ukt - tau)
+
+        euke = torch.exp(ukt + eps_prev - 2 * tau)
+
+        denom = e1 * beta_prev + e2
+        denom_sq = denom * denom
+
+        grad_wkvt = grad_wkv[:, t : t + 1]
+
+        # Backpropagates wkv gradients.
+        grad_uk = grad_wkvt * e2 * (e1 * beta_prev * vt - e1 * alpha_prev) / denom_sq
+        grad_u += grad_uk.flatten(0, -2).sum(0)
+        grad_k[:, t : t + 1] += grad_uk
+        grad_v[:, t : t + 1] += grad_wkvt * e2 / denom
+
+        grad_alpha_wkv = grad_wkvt * e1 / denom
+        grad_beta_wkv = -grad_wkvt * e1 * (e2 * vt + e1 * alpha_prev) / denom_sq
+        grad_eps_wkv = grad_wkvt * euke * (alpha_prev - vt * beta_prev) / (e1 * beta_prev + e2) ** 2
+
+        e1 = torch.exp(w + eps_prev - eps_curr)
+        e2 = torch.exp(kt - eps_curr)
+
+        # Backpropagates alpha gradients.
+        grad_alpha_we = grad_alpha * e1 * alpha_prev
+        grad_w += grad_alpha_we.flatten(0, -2).sum(0)
+        grad_k[:, t : t + 1] += grad_alpha * e2 * vt
+        grad_v[:, t : t + 1] += grad_alpha * e2
+        grad_eps += grad_alpha * -alpha_curr
+
+        # Backpropagates beta gradients.
+        grad_beta_we = grad_beta * e1 * beta_prev
+        grad_w += grad_beta_we.flatten(0, -2).sum(0)
+        grad_k[:, t : t + 1] += grad_beta * e2
+        grad_eps += grad_beta * -beta_curr
+
+        # Backpropagates epsilon gradients.
+        eps_grad_mask = w + eps_prev > kt
+        grad_eps_we = torch.where(eps_grad_mask, grad_eps, torch.zeros_like(grad_eps))
+        grad_w += grad_eps_we.flatten(0, -2).sum(0)
+        grad_k[:, t : t + 1] += torch.where(eps_grad_mask, torch.zeros_like(grad_eps), grad_eps)
+
+        # Computes gradients for alpha, beta and epsilon.
+        grad_alpha = grad_alpha * e1 + grad_alpha_wkv
+        grad_beta = grad_beta * e1 + grad_beta_wkv
+        grad_eps = grad_alpha_we + grad_beta_we + grad_eps_we + grad_eps_wkv
+
+    return grad_w, grad_u, grad_k, grad_v, torch.stack((grad_alpha, grad_beta, grad_eps), dim=1)
+
+
+class WkvWithEps(Function):
+    @staticmethod
+    def forward(
+        ctx: FunctionCtx,
+        w: Tensor,
+        u: Tensor,
+        k: Tensor,
+        v: Tensor,
+        state: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        wkv, state_out = wkv_with_eps_forward(w, u, k, v, state)
+        ctx.save_for_backward(w, u, k, v, state_out)
+        return wkv, state_out[:, :, -1:]
+
+    @staticmethod
+    @once_differentiable
+    def backward(
+        ctx: FunctionCtx,
+        grad_wkv: Tensor,
+        grad_state: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        w, u, k, v, state = cast(tuple[Tensor, ...], ctx.saved_tensors)
+        return wkv_with_eps_backward(w, u, k, v, state, grad_wkv, grad_state)
+
+
+def initial_state_with_eps(emb_dim: int) -> Tensor:
+    return torch.zeros(1, 3, 1, emb_dim)
+
+
+def wkv_with_eps(w: Tensor, u: Tensor, k: Tensor, v: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
     """Runs the core WKV computation.
 
     Args:
@@ -179,112 +301,31 @@ def _wkv_vanilla(
         u: The output multiplier tensor, with shape (D)
         k: The K tensor, with shape (B, T, D)
         v: The V tensor, with shape (B, T, D)
-        alpha: The last numerator, with shape (B, 1, D)
-        beta: The last denominator, with shape (B, 1, D)
+        state: The state tensor, with shape (B, 3, T, D), consisting of the
+            alpha, beta and eps tensors, each with shape (B, 1, T, D)
 
     Returns:
-        The WKV tensor, with shape (B, T, D), and the next alpha and beta
-        tensors, each with shape (B, 1, D)
+        The WKV tensor, with shape (B, T, D), and the next state, with shape
+        (B, 3, 1, D), consisting of the next alpha, beta and eps tensors, each
+        with shape (B, 1, 1, D)
     """
-    assert w.dim() == u.dim() == 1
-    assert k.dim() == v.dim() == alpha.dim() == beta.dim() == 3
-
-    _, tsz, _ = k.shape
-
-    ew = torch.exp(-torch.exp(w))
-
-    wkvs = []
-
-    for t in range(tsz):
-        kt, vt = k[:, t : t + 1], v[:, t : t + 1]
-        euk = torch.exp(u + kt)
-        wkv = (alpha + euk * vt) / (beta + euk)
-        wkvs.append(wkv)
-
-        ek = torch.exp(kt)
-        alpha = ew * alpha + ek * vt
-        beta = ew * beta + ek
-
-    return torch.cat(wkvs, 1), alpha, beta
+    return WkvWithEps.apply(w, u, k, v, state)
 
 
-def _wkv_log_space(
-    w: Tensor,
-    u: Tensor,
-    k: Tensor,
-    v: Tensor,
-    log_alpha_plus: Tensor,
-    log_alpha_minus: Tensor,
-    log_beta: Tensor,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Runs the core WKV computation.
+def get_wkv_fn() -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor], tuple[Tensor, Tensor]]:
+    if supports_triton():
+        from pretrained.triton.rwkv_kernel import wkv_triton_with_eps
 
-    Args:
-        w: The decay tensor, with shape (D)
-        u: The output multiplier tensor, with shape (D)
-        k: The K tensor, with shape (B, T, D)
-        v: The V tensor, with shape (B, T, D)
-        log_alpha_plus: The last positive numerator part, with shape (B, 1, D)
-        log_alpha_minus: The last negative numerator part, with shape (B, 1, D)
-        log_beta: The last denominator, with shape (B, 1, D)
+        return wkv_triton_with_eps
 
-    Returns:
-        The WKV tensor, with shape (B, T, D), and the next alpha plus, alpha
-        minus and beta tensors, each with shape (B, 1, D)
-    """
-    assert w.dim() == u.dim() == 1
-    assert k.dim() == v.dim() == log_alpha_plus.dim() == log_alpha_minus.dim() == log_beta.dim() == 3
-
-    _, tsz, _ = k.shape
-
-    w = -torch.exp(w)  # (D)
-    wkvs = []
-
-    for t in range(tsz):
-        kt, vt = k[:, t : t + 1], v[:, t : t + 1]
-        v_plus = torch.clamp(vt, min=0) + 1e-9
-        v_minus = torch.clamp(-vt, min=0) + 1e-9
-        log_v_plus = torch.log(v_plus)
-        log_v_minus = torch.log(v_minus)
-
-        log_wkv_plus = torch.logaddexp(u + kt + log_v_plus, log_alpha_plus) - torch.logaddexp(u + kt, log_beta)
-        log_wkv_minus = torch.logaddexp(u + kt + log_v_minus, log_alpha_minus) - torch.logaddexp(u + kt, log_beta)
-
-        wkv = torch.exp(log_wkv_plus) - torch.exp(log_wkv_minus)
-        wkvs.append(wkv)
-
-        log_alpha_plus = torch.logaddexp(w + log_alpha_plus, kt + log_v_plus)
-        log_alpha_minus = torch.logaddexp(w + log_alpha_minus, kt + log_v_minus)
-        log_beta = torch.logaddexp(w + log_beta, kt)
-
-    return torch.cat(wkvs, 1), log_alpha_plus, log_alpha_minus, log_beta
-
-
-def get_wkv_fn() -> Callable[[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor], tuple[Tensor, Tensor, Tensor, Tensor]]:
-    """Returns the WKV function to use.
-
-    The function takes six tensors as input, and returns three tensors as
-    output. The input tensors are ``w``, ``u``, ``k``, ``v``, ``alpha``, and
-    ``beta``, and the output tensors are ``out``, ``alpha``, and ``beta``.
-
-    Returns:
-        The WKV function to use.
-    """
-    if torch.cuda.is_available():
-        from pretrained.triton.rwkv_kernel import triton_wkv
-
-        return triton_wkv
-
-    return _wkv_log_space
+    return wkv_with_eps
 
 
 class Attention(nn.Module):
     init_x: Tensor
-    init_alpha_plus: Tensor
-    init_alpha_minus: Tensor
-    init_beta: Tensor
+    init_state: Tensor
 
-    def __init__(self, emb_dim: int, max_tsz: int = 1024, lora_rank: int | None = None) -> None:
+    def __init__(self, emb_dim: int, lora_rank: int | None = None) -> None:
         super().__init__()
 
         self.time_decay = nn.Parameter(torch.empty(emb_dim))
@@ -299,12 +340,9 @@ class Attention(nn.Module):
         self.receptance = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
         self.output = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank)
 
-        self.register_buffer("init_x", torch.zeros(1, 1, emb_dim), persistent=False)
-        self.register_buffer("init_alpha_plus", torch.full((1, 1, emb_dim), float("-inf")), persistent=False)
-        self.register_buffer("init_alpha_minus", torch.full((1, 1, emb_dim), float("-inf")), persistent=False)
-        self.register_buffer("init_beta", torch.full((1, 1, emb_dim), float("-inf")), persistent=False)
-
         self.wkv_fn = get_wkv_fn()
+        self.register_buffer("init_x", torch.zeros(1, 1, emb_dim), persistent=False)
+        self.register_buffer("init_state", initial_state_with_eps(emb_dim), persistent=False)
 
     def time_shift(self, last_x: Tensor, x: Tensor) -> Tensor:
         _, tsz, _ = x.shape
@@ -316,12 +354,10 @@ class Attention(nn.Module):
         bsz, _, _ = x.shape
 
         if state is None:
-            last_x = self.init_x.repeat(bsz, 1, 1)
-            log_alpha_p = self.init_alpha_plus.repeat(bsz, 1, 1)
-            log_alpha_m = self.init_alpha_minus.repeat(bsz, 1, 1)
-            log_beta = self.init_beta.repeat(bsz, 1, 1)
+            last_x = self.init_x.repeat_interleave(bsz, dim=0)
+            last_state = self.init_state.repeat_interleave(bsz, dim=0)
         else:
-            last_x, log_alpha_p, log_alpha_m, log_beta = state
+            last_x, last_state = state
         last_x = self.time_shift(last_x, x)
 
         k = self.key(x * self.time_mix_k + last_x * (1 - self.time_mix_k))
@@ -330,10 +366,11 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        wkv, log_alpha_p, log_alpha_m, log_beta = self.wkv_fn(w, u, k, v, log_alpha_p, log_alpha_m, log_beta)
+        w = -torch.exp(w)
+        wkv, next_state = self.wkv_fn(w, u, k, v, last_state)
         rwkv = wkv * sr
 
-        return self.output(rwkv), (x[..., -1:, :], log_alpha_p, log_alpha_m, log_beta)
+        return self.output(rwkv), (x[..., -1:, :], next_state)
 
 
 class FeedForward(nn.Module):
@@ -383,19 +420,26 @@ class Block(nn.Module):
     def forward(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
         if self.ln0 is not None:
             x = self.ln0(x)
-        dx, att_state_out = self.att(self.ln1(x), None if state is None else state[0])
+        dx, att_state_out = self.att.forward(self.ln1(x), None if state is None else state[0])
         x = x + dx
-        dx, ffn_state_out = self.ffn(self.ln2(x), None if state is None else state[1])
+        dx, ffn_state_out = self.ffn.forward(self.ln2(x), None if state is None else state[1])
         x = x + dx
         return x, (att_state_out, ffn_state_out)
 
 
 class Rwkv(nn.Module):
-    def __init__(self, emb_dim: int, num_tokens: int, num_layers: int, lora_rank: int | None = None) -> None:
+    def __init__(
+        self,
+        emb_dim: int,
+        num_tokens: int,
+        num_layers: int,
+        lora_rank: int | None = None,
+    ) -> None:
         super().__init__()
 
         self.emb = maybe_lora(nn.Embedding(num_tokens, emb_dim), lora_rank)
-        self.blocks = nn.ModuleList([Block(emb_dim, i == 0, lora_rank=lora_rank) for i in range(num_layers)])
+        blocks = [Block(emb_dim, i == 0, lora_rank=lora_rank) for i in range(num_layers)]
+        self.blocks = nn.ModuleList(blocks)
         self.ln_out = nn.LayerNorm(emb_dim)
         self.head = maybe_lora(nn.Linear(emb_dim, num_tokens, bias=False), lora_rank)
 
@@ -428,11 +472,7 @@ class Rwkv(nn.Module):
 
 
 def get_tokenizer() -> Any:
-    try:
-        from tokenizers import Tokenizer
-
-    except ImportError:
-        raise ImportError("Please install tokenizers with: `pip install tokenizers`")
+    from tokenizers import Tokenizer
 
     with Timer("downloading tokenizer"):
         tokenizer_path = ensure_downloaded(TOKENIZER_URL, "rwkv", "tokenizer.json")
@@ -481,7 +521,7 @@ class RwkvPredictor:
             prompt = torch.tensor([self.tokenizer.encode(prompt).ids])
         assert prompt.dim() == 2 and prompt.shape[0] == 1
 
-        probs, state = self.model(self.model.tensor_to(prompt))
+        probs, state = self.model.forward(self.model.tensor_to(prompt))
         probs = probs[:, -1:]
 
         end_toks_set = set() if end_toks is None else set(end_toks)
@@ -551,6 +591,8 @@ def test_rwkv_adhoc() -> None:
 
     def generate_for_prompt(prompt: str) -> None:
         print(prompt, end="")
+        start_time: float | None = None
+        num_tokens = 0
         for token in predictor.generate(
             prompt,
             max_len=args.tsz,
@@ -559,7 +601,14 @@ def test_rwkv_adhoc() -> None:
             end_strs=args.end_tok,
         ):
             print(token, end=args.sep, flush=True)
+            if start_time is None:
+                start_time = time.time()
+            num_tokens += 1
         print()
+        end_time = time.time()
+        if start_time is not None:
+            time_delta = end_time - start_time
+            print(f"Time taken: {num_tokens} / {time_delta:.2f}s = {num_tokens / time_delta:.2f} tokens per second")
 
     if args.prompt:
         generate_for_prompt(args.prompt)
