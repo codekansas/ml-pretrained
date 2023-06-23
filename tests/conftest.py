@@ -1,4 +1,5 @@
-"""Pytest configuration file."""
+# mypy: disable-error-code="import"
+# """Pytest configuration file."""
 
 import functools
 
