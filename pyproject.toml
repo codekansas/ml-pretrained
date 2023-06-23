@@ -15,6 +15,7 @@ markers = [
     "has_gpu: Marks test as requiring a GPU to run",
     "multi_gpu: Marks tests as requiring multiple GPUs to run",
     "has_mps: Marks test as requiring an MPS device to run",
+    "has_triton: Marks test as requiring Triton to run",
 ]
 
 [tool.mypy]
@@ -33,8 +34,6 @@ warn_redundant_casts = true
 
 incremental = true
 namespace_packages = false
-
-exclude = ["^pretrained/api.py$"]
 
 # For TorchScript stuff.
 disable_error_code = ["attr-defined"]

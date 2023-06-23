@@ -1,3 +1,4 @@
+# mypy: disable-error-code="import"
 """Pytest configuration file."""
 
 import functools
@@ -28,6 +29,21 @@ def has_mps() -> bool:
     return torch.backends.mps.is_available()
 
 
+@functools.lru_cache()
+def has_triton() -> bool:
+    if not has_gpu():
+        return False
+
+    try:
+        import triton
+
+        assert triton is not None
+        return True
+
+    except Exception:
+        return False
+
+
 def pytest_runtest_setup(item: Function) -> None:
     for mark in item.iter_markers():
         if mark.name == "has_gpu" and not has_gpu():
@@ -36,6 +52,8 @@ def pytest_runtest_setup(item: Function) -> None:
             pytest.skip("Skipping because this test requires multiple GPUs but <= 1 are available")
         if mark.name == "has_mps" and not has_mps():
             pytest.skip("Skipping because this test requires an MPS device and none is available")
+        if mark.name == "has_triton" and not has_triton():
+            pytest.skip("Skipping because this test requires Triton and none is available")
 
 
 def pytest_collection_modifyitems(items: list[Function]) -> None:
