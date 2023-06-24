@@ -677,7 +677,7 @@ class Block(nn.Module):
         freeze_layer_norm: bool = False,
         freeze_attn: bool = False,
         freeze_ffn: bool = False,
-        wkv_key: WkvFnKey = "log",
+        wkv_key: WkvFnKey | None = None,
     ) -> None:
         super().__init__()
 
@@ -737,7 +737,7 @@ class Rwkv(nn.Module):
         freeze_layer_norm: bool | None = None,
         freeze_attn: bool | None = None,
         freeze_ffn: bool | None = None,
-        wkv_key: WkvFnKey = "log",
+        wkv_key: WkvFnKey | None = None,
     ) -> None:
         super().__init__()
 
