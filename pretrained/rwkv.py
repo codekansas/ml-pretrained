@@ -629,22 +629,27 @@ class FeedForward(nn.Module):
 
     def __init__(
         self,
-        emb_dim: int,
+        dim: int,
         ffn_dim: int,
         lora_rank: int | None = None,
         lora_alpha: float = 1.0,
         lora_dropout: float = 0.0,
+        freeze: bool = False,
     ) -> None:
         super().__init__()
 
-        self.time_mix_k = nn.Parameter(torch.empty(1, 1, emb_dim))
-        self.time_mix_r = nn.Parameter(torch.empty(1, 1, emb_dim))
+        self.time_mix_k = nn.Parameter(torch.empty(1, 1, dim))
+        self.time_mix_r = nn.Parameter(torch.empty(1, 1, dim))
 
-        self.key = maybe_lora(nn.Linear(emb_dim, ffn_dim, bias=False), lora_rank, lora_alpha, lora_dropout)
-        self.receptance = maybe_lora(nn.Linear(emb_dim, emb_dim, bias=False), lora_rank, lora_alpha, lora_dropout)
-        self.value = maybe_lora(nn.Linear(ffn_dim, emb_dim, bias=False), lora_rank, lora_alpha, lora_dropout)
+        if freeze:
+            self.time_mix_k.requires_grad_(False)
+            self.time_mix_r.requires_grad_(False)
 
-        self.register_buffer("init_state", torch.zeros(1, 1, emb_dim), persistent=False)
+        self.key = maybe_lora(nn.Linear(dim, ffn_dim, False), lora_rank, lora_alpha, lora_dropout, freeze=freeze)
+        self.receptance = maybe_lora(nn.Linear(dim, dim, False), lora_rank, lora_alpha, lora_dropout, freeze=freeze)
+        self.value = maybe_lora(nn.Linear(ffn_dim, dim, False), lora_rank, lora_alpha, lora_dropout, freeze=freeze)
+
+        self.register_buffer("init_state", torch.zeros(1, 1, dim), persistent=False)
 
     def time_shift(self, last_x: Tensor, x: Tensor) -> Tensor:
         _, tsz, _ = x.shape
