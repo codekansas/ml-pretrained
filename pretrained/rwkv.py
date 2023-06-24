@@ -868,7 +868,7 @@ def pretrained_rwkv(
             pretrained model.
         wkv_key: The choice of WKV function to use. They are mathematically
             equivalent, but with different behaviors regarding numerical
-            stability.g
+            stability.
 
     Returns:
         The pretrained RWKV model.
