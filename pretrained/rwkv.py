@@ -542,6 +542,15 @@ def get_wkv_fn_cuda(key: WkvFnKey) -> Callable[[Tensor, Tensor, Tensor, Tensor, 
             raise ValueError(f"Unsupported key: {key}")
 
 
+def get_default_wkv_fn_key() -> WkvFnKey:
+    if "WKV_FN" in os.environ:
+        assert (wkv_fn_str := os.environ["WKV_FN"]) in get_args(WkvFnKey), f"Unsupported WKV_FN: {wkv_fn_str}"
+        return cast(WkvFnKey, wkv_fn_str)
+
+    warnings.warn("Using default WKV_FN: eps")
+    return "eps"
+
+
 class Attention(nn.Module):
     init_x: Tensor
     init_state: Tensor
@@ -575,6 +584,9 @@ class Attention(nn.Module):
         self.value = maybe_lora(nn.Linear(dim, dim, False), lora_rank, lora_alpha, lora_dropout, freeze=freeze)
         self.receptance = maybe_lora(nn.Linear(dim, dim, False), lora_rank, lora_alpha, lora_dropout, freeze=freeze)
         self.output = maybe_lora(nn.Linear(dim, dim, False), lora_rank, lora_alpha, lora_dropout, freeze=freeze)
+
+        if wkv_key is None:
+            wkv_key = get_default_wkv_fn_key()
 
         self.wkv_fn = get_wkv_fn(wkv_key)
         self.wkv_fn_cuda = get_wkv_fn_cuda(wkv_key)
