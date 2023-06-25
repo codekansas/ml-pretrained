@@ -49,7 +49,7 @@ import torch
 import torch.nn.functional as F
 from ml.core.config import conf_field
 from ml.models.base import BaseModel, BaseModelConfig
-from ml.models.lora import lora
+from ml.models.lora import maybe_lora
 from ml.utils.audio import write_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -219,8 +219,8 @@ class LinearNorm(nn.Module):
         super().__init__()
 
         linear_layer = nn.Linear(in_dim, out_dim, bias=bias)
-        self.linear_layer = linear_layer if lora_rank is None else lora(linear_layer, r=lora_rank)
-        nn.init.xavier_uniform_(self.linear_layer.weight, gain=nn.init.calculate_gain(w_init_gain))
+        nn.init.xavier_uniform_(linear_layer.weight, gain=nn.init.calculate_gain(w_init_gain))
+        self.linear_layer = maybe_lora(linear_layer, r=lora_rank)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.linear_layer(x)
@@ -254,7 +254,7 @@ class ConvNorm(nn.Module):
             dilation=dilation,
             bias=bias,
         )
-        self.conv = conv if lora_rank is None else lora(conv, r=lora_rank)
+        self.conv = maybe_lora(conv, r=lora_rank)
 
         nn.init.xavier_uniform_(self.conv.weight, gain=nn.init.calculate_gain(w_init_gain))
 
@@ -463,6 +463,7 @@ class EncoderConfig:
     kernel_size: int = conf_field(5, help="Encoder kernel size")
     n_convolutions: int = conf_field(3, help="Number of encoder convolutions")
     lora_rank: int | None = conf_field(None, help="LoRA rank")
+    freeze_bn: bool = conf_field(False, help="Freeze batch normalization")
 
 
 class Encoder(nn.Module):
@@ -471,29 +472,31 @@ class Encoder(nn.Module):
 
         convolutions = []
         for _ in range(config.n_convolutions):
-            conv_layer = nn.Sequential(
-                ConvNorm(
-                    config.emb_dim,
-                    config.emb_dim,
-                    kernel_size=config.kernel_size,
-                    stride=1,
-                    padding=int((config.kernel_size - 1) / 2),
-                    dilation=1,
-                    w_init_gain="relu",
-                    lora_rank=config.lora_rank,
-                ),
-                nn.BatchNorm1d(config.emb_dim),
+            conv_norm = ConvNorm(
+                config.emb_dim,
+                config.emb_dim,
+                kernel_size=config.kernel_size,
+                stride=1,
+                padding=int((config.kernel_size - 1) / 2),
+                dilation=1,
+                w_init_gain="relu",
+                lora_rank=config.lora_rank,
             )
+            batch_norm = nn.BatchNorm1d(config.emb_dim)
+            if config.freeze_bn:
+                batch_norm.requires_grad_(False)
+            conv_layer = nn.Sequential(conv_norm, batch_norm)
             convolutions.append(conv_layer)
         self.convolutions = nn.ModuleList(convolutions)
 
-        self.lstm = nn.LSTM(
+        lstm = nn.LSTM(
             config.emb_dim,
             int(config.emb_dim / 2),
             1,
             batch_first=True,
             bidirectional=True,
         )
+        self.lstm = maybe_lora(lstm, config.lora_rank)
 
     def forward(self, x: Tensor, input_lengths: Tensor) -> Tensor:
         for conv in self.convolutions:
