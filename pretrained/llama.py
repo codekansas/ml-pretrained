@@ -39,6 +39,7 @@ from typing import Iterator, Literal, get_args
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from ml.core.config import conf_field
 from ml.core.env import get_model_dir
 from ml.models.lora import maybe_lora
@@ -68,6 +69,7 @@ class ModelArgs:
     multiple_of: int = conf_field(256, help="Make SwiGLU hidden layer size a multiple of large power of two")
     norm_eps: float = conf_field(1e-4, help="The normalization epsilon value")
     max_seq_len: int = conf_field(2048, help="The maximum sequence length")
+    use_checkpointing: bool = conf_field(True, help="Whether to use checkpointing")
 
 
 PRETRAINED_MODEL_SIZES: dict[PretrainedLlamaKey, ModelArgs] = {
@@ -217,10 +219,20 @@ class TransformerBlock(nn.Module):
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.use_checkpointing = args.use_checkpointing
 
         if lora_rank is not None:
             self.attention_norm.requires_grad_(False)
             self.ffn_norm.requires_grad_(False)
+
+    def run_attn(self, x: Tensor,
+    freqs_cis: Tensor,
+        is_causal: bool,
+        cache: tuple[Tensor, Tensor] | None = None,) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+        return self.attention.forward(self.attention_norm(x), freqs_cis, is_causal, cache)
+
+    def run_ffn(self, h: Tensor) -> Tensor:
+        return self.feed_forward.forward(self.ffn_norm(h))
 
     def forward(
         self,
@@ -229,9 +241,14 @@ class TransformerBlock(nn.Module):
         is_causal: bool,
         cache: tuple[Tensor, Tensor] | None = None,
     ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
-        h, cache = self.attention.forward(self.attention_norm(x), freqs_cis, is_causal, cache)
-        h = x + h
-        out = h + self.feed_forward.forward(self.ffn_norm(h))
+        if self.use_checkpointing:
+            h, cache = torch.utils.checkpoint.checkpoint(self.run_attn, x, freqs_cis, is_causal, cache)
+            h = x + h
+            out = h + torch.utils.checkpoint.checkpoint(self.run_ffn, h)
+        else:
+            h, cache = self.run_attn(x, freqs_cis, is_causal, cache)
+            h = x + h
+            out = h + self.run_ffn(h)
         return out, cache
 
 
