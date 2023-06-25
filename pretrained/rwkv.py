@@ -50,6 +50,7 @@ from typing import Any, Callable, Iterator, Literal, Sequence, cast, get_args
 
 import torch
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from ml.models.lora import maybe_lora, reset_lora_weights_
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -682,6 +683,7 @@ class Block(nn.Module):
         freeze_layer_norm: bool = False,
         freeze_attn: bool = False,
         freeze_ffn: bool = False,
+        use_checkpointing: bool = False,
         wkv_key: WkvFnKey | None = None,
     ) -> None:
         super().__init__()
@@ -689,6 +691,8 @@ class Block(nn.Module):
         self.ln0 = nn.LayerNorm(emb_dim) if pre_norm else None
         self.ln1 = nn.LayerNorm(emb_dim)
         self.ln2 = nn.LayerNorm(emb_dim)
+
+        self.use_checkpointing = use_checkpointing
 
         if freeze_layer_norm:
             if self.ln0 is not None:
@@ -714,13 +718,25 @@ class Block(nn.Module):
             freeze=freeze_ffn,
         )
 
+    def run_attn(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
+        return self.att.forward(self.ln1(x), None if state is None else state[0])
+
+    def run_ffn(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
+        return self.ffn.forward(self.ln2(x), None if state is None else state[1])
+
     def forward(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
         if self.ln0 is not None:
             x = self.ln0(x)
-        dx, att_state_out = self.att.forward(self.ln1(x), None if state is None else state[0])
-        x = x + dx
-        dx, ffn_state_out = self.ffn.forward(self.ln2(x), None if state is None else state[1])
-        x = x + dx
+        if self.use_checkpointing:
+            dx, att_state_out = torch.utils.checkpoint.checkpoint(self.run_attn, x, state)
+            x = x + dx
+            dx, ffn_state_out = torch.utils.checkpoint.checkpoint(self.run_ffn, x, state)
+            x = x + dx
+        else:
+            dx, att_state_out = self.run_attn(x, state)
+            x = x + dx
+            dx, ffn_state_out = self.run_ffn(x, state)
+            x = x + dx
         return x, (att_state_out, ffn_state_out)
 
 
@@ -742,6 +758,7 @@ class Rwkv(nn.Module):
         freeze_layer_norm: bool | None = None,
         freeze_attn: bool | None = None,
         freeze_ffn: bool | None = None,
+        use_checkpointing: bool = False,
         wkv_key: WkvFnKey | None = None,
     ) -> None:
         super().__init__()
@@ -779,6 +796,7 @@ class Rwkv(nn.Module):
                 freeze_layer_norm=freeze_layer_norm,
                 freeze_attn=freeze_attn,
                 freeze_ffn=freeze_ffn,
+                use_checkpointing=use_checkpointing,
                 wkv_key=wkv_key,
             )
             for i in range(num_layers)
@@ -907,6 +925,7 @@ def pretrained_rwkv(
     freeze_layer_norm: bool | None = None,
     freeze_attn: bool | None = None,
     freeze_ffn: bool | None = None,
+    use_checkpointing: bool = False,
     empty: bool = False,
     wkv_key: WkvFnKey | None = None,
 ) -> Rwkv:
@@ -930,6 +949,7 @@ def pretrained_rwkv(
         freeze_layer_norm: Whether to freeze the layer normalization parameters.
         freeze_attn: Whether to freeze the attention parameters.
         freeze_ffn: Whether to freeze the feed-forward parameters.
+        use_checkpointing: Whether to use checkpointing to reduce memory usage.
         empty: Whether to return an empty model with the same structure as the
             pretrained model.
         wkv_key: The choice of WKV function to use. They are mathematically
@@ -959,6 +979,7 @@ def pretrained_rwkv(
             freeze_layer_norm=freeze_layer_norm,
             freeze_attn=freeze_attn,
             freeze_ffn=freeze_ffn,
+            use_checkpointing=use_checkpointing,
             wkv_key=wkv_key,
         )
 
