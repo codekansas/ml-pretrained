@@ -234,8 +234,8 @@ class TransformerBlock(nn.Module):
     ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         return self.attention.forward(self.attention_norm(x), freqs_cis, is_causal, cache)
 
-    def run_ffn(self, h: Tensor) -> Tensor:
-        return self.feed_forward.forward(self.ffn_norm(h))
+    def run_ffn(self, x: Tensor) -> Tensor:
+        return self.feed_forward.forward(self.ffn_norm(x))
 
     def forward(
         self,
@@ -245,14 +245,14 @@ class TransformerBlock(nn.Module):
         cache: tuple[Tensor, Tensor] | None = None,
     ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         if self.use_checkpointing:
-            h, cache = torch.utils.checkpoint.checkpoint(self.run_attn, x, freqs_cis, is_causal, cache)
-            h = x + h
-            out = h + torch.utils.checkpoint.checkpoint(self.run_ffn, h)
+            h, cache_out = torch.utils.checkpoint.checkpoint(self.run_attn, x, freqs_cis, is_causal, cache)
+            x = x + h
+            out = x + torch.utils.checkpoint.checkpoint(self.run_ffn, x)
         else:
-            h, cache = self.run_attn(x, freqs_cis, is_causal, cache)
-            h = x + h
-            out = h + self.run_ffn(h)
-        return out, cache
+            h, cache_out = self.run_attn(x, freqs_cis, is_causal, cache)
+            x = x + h
+            out = x + self.run_ffn(x)
+        return out, cache_out
 
 
 class Tokenizer:
