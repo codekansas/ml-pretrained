@@ -718,10 +718,10 @@ class Block(nn.Module):
             freeze=freeze_ffn,
         )
 
-    def run_attn(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
+    def run_attn(self, x: Tensor, state: State | None = None) -> tuple[Tensor, AttentionState]:
         return self.att.forward(self.ln1(x), None if state is None else state[0])
 
-    def run_ffn(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
+    def run_ffn(self, x: Tensor, state: State | None = None) -> tuple[Tensor, FeedForwardState]:
         return self.ffn.forward(self.ln2(x), None if state is None else state[1])
 
     def forward(self, x: Tensor, state: State | None = None) -> tuple[Tensor, State]:
