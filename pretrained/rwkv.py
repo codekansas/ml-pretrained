@@ -50,7 +50,7 @@ from typing import Any, Callable, Iterator, Literal, Sequence, cast, get_args
 
 import torch
 import torch.nn.functional as F
-from ml.models.lora import maybe_lora
+from ml.models.lora import maybe_lora, reset_lora_weights_
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
 from ml.utils.device.base import BaseDevice
@@ -965,6 +965,7 @@ def pretrained_rwkv(
     if empty:
         model._apply(meta_to_empty_func(device.get_device(), torch.bfloat16))
         model._apply(lambda x: device.tensor_to(x))
+        reset_lora_weights_(model)
         return model
 
     with Timer("downloading checkpoint"):
@@ -978,6 +979,7 @@ def pretrained_rwkv(
         model._apply(meta_to_empty_func(device.get_device(), torch.bfloat16))
         model.load_state_dict(ckpt)
         model._apply(lambda x: device.tensor_to(x))
+        reset_lora_weights_(model)
 
     return model
 

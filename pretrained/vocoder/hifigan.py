@@ -16,7 +16,7 @@ from typing import TypeVar, cast
 import torch
 import torch.nn.functional as F
 from ml.core.config import conf_field
-from ml.models.lora import SupportedModule as LoraModule, lora
+from ml.models.lora import SupportedModule as LoraModule, maybe_lora
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -50,7 +50,7 @@ T_module = TypeVar("T_module", bound=LoraModule)
 
 
 def lora_weight_norm(module: T_module, lora_rank: int | None) -> T_module:
-    return weight_norm(module if lora_rank is None else lora(module, r=lora_rank))
+    return weight_norm(maybe_lora(module, r=lora_rank))
 
 
 class ResBlock(nn.Module):
