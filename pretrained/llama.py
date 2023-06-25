@@ -225,10 +225,13 @@ class TransformerBlock(nn.Module):
             self.attention_norm.requires_grad_(False)
             self.ffn_norm.requires_grad_(False)
 
-    def run_attn(self, x: Tensor,
-    freqs_cis: Tensor,
+    def run_attn(
+        self,
+        x: Tensor,
+        freqs_cis: Tensor,
         is_causal: bool,
-        cache: tuple[Tensor, Tensor] | None = None,) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+        cache: tuple[Tensor, Tensor] | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
         return self.attention.forward(self.attention_norm(x), freqs_cis, is_causal, cache)
 
     def run_ffn(self, h: Tensor) -> Tensor:
