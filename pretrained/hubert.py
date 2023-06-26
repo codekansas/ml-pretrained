@@ -122,6 +122,9 @@ class HubertPositionalConvEmbedding(nn.Module):
         hidden_states = hidden_states.transpose(1, 2)
         return hidden_states
 
+    def remove_weight_norm_(self) -> None:
+        self.conv = nn.utils.remove_weight_norm(self.conv)
+
 
 class HubertAttention(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, bias: bool = True) -> None:
@@ -231,6 +234,9 @@ class HubertEncoder(nn.Module):
             if output_layer is not None and i == output_layer:
                 break
         return hidden_states
+
+    def remove_weight_norm_(self) -> None:
+        self.pos_conv_embed.remove_weight_norm_()
 
 
 class HubertGroupNormConvLayer(nn.Module):
@@ -397,6 +403,9 @@ class HubertEncoderStableLayerNorm(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         return hidden_states
 
+    def remove_weight_norm_(self) -> None:
+        self.pos_conv_embed.remove_weight_norm_()
+
 
 class Hubert(nn.Module):
     __constants__ = ["conv_kernel", "conv_stride"]
@@ -410,7 +419,11 @@ class Hubert(nn.Module):
 
         self.feature_extractor = HubertFeatureEncoder(config)
         self.feature_projection = HubertFeatureProjection(config)
-        self.encoder = HubertEncoderStableLayerNorm(config) if config.do_stable_layer_norm else HubertEncoder(config)
+        self.encoder: HubertEncoderStableLayerNorm | HubertEncoder
+        if config.do_stable_layer_norm:
+            self.encoder = HubertEncoderStableLayerNorm(config)
+        else:
+            self.encoder = HubertEncoder(config)
 
     def forward(
         self,
@@ -431,6 +444,10 @@ class Hubert(nn.Module):
         device: BaseDevice | None = None,
     ) -> "HubertPredictor":
         return HubertPredictor(self, kmeans, device=device)
+
+    def remove_weight_norm_(self) -> None:
+        assert isinstance(self.encoder, (HubertEncoderStableLayerNorm, HubertEncoder))
+        self.encoder.remove_weight_norm_()
 
 
 class HubertPredictor:
@@ -454,6 +471,9 @@ class HubertPredictor:
                 device returned by AutoDevice.detect_device().
         """
         super().__init__()
+
+        # Remove weight norm for inference, if it exists.
+        hubert_model.remove_weight_norm_()
 
         self.device = AutoDevice.detect_device() if device is None else device
         self.model = hubert_model.eval()
