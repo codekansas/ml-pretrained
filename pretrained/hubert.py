@@ -122,8 +122,8 @@ class HubertPositionalConvEmbedding(nn.Module):
         hidden_states = hidden_states.transpose(1, 2)
         return hidden_states
 
-    def remove_weight_norm(self) -> None:
-        nn.utils.remove_weight_norm(self.conv)
+    def remove_weight_norm_(self) -> None:
+        self.conv = nn.utils.remove_weight_norm(self.conv)
 
 
 class HubertAttention(nn.Module):
@@ -235,8 +235,8 @@ class HubertEncoder(nn.Module):
                 break
         return hidden_states
 
-    def remove_weight_norm(self) -> None:
-        self.pos_conv_embed.remove_weight_norm()
+    def remove_weight_norm_(self) -> None:
+        self.pos_conv_embed.remove_weight_norm_()
 
 
 class HubertGroupNormConvLayer(nn.Module):
@@ -403,6 +403,9 @@ class HubertEncoderStableLayerNorm(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         return hidden_states
 
+    def remove_weight_norm_(self) -> None:
+        self.pos_conv_embed.remove_weight_norm_()
+
 
 class Hubert(nn.Module):
     __constants__ = ["conv_kernel", "conv_stride"]
@@ -438,9 +441,8 @@ class Hubert(nn.Module):
     ) -> "HubertPredictor":
         return HubertPredictor(self, kmeans, device=device)
 
-    def remove_weight_norm(self) -> None:
-        if isinstance(self.encoder, HubertEncoder):
-            self.encoder.remove_weight_norm()
+    def remove_weight_norm_(self) -> None:
+        self.encoder.remove_weight_norm_()
 
 
 class HubertPredictor:
@@ -465,9 +467,11 @@ class HubertPredictor:
         """
         super().__init__()
 
+        # Remove weight norm for inference, if it exists.
+        hubert_model.remove_weight_norm_()
+
         self.device = AutoDevice.detect_device() if device is None else device
         self.model = hubert_model.eval()
-        self.model.remove_weight_norm()
         self.kmeans = kmeans.eval() if kmeans is not None else None
         self.device.module_to(self.model)
         if self.kmeans is not None:
