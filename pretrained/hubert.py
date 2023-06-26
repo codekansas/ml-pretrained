@@ -419,7 +419,11 @@ class Hubert(nn.Module):
 
         self.feature_extractor = HubertFeatureEncoder(config)
         self.feature_projection = HubertFeatureProjection(config)
-        self.encoder = HubertEncoderStableLayerNorm(config) if config.do_stable_layer_norm else HubertEncoder(config)
+        self.encoder: HubertEncoderStableLayerNorm | HubertEncoder
+        if config.do_stable_layer_norm:
+            self.encoder = HubertEncoderStableLayerNorm(config)
+        else:
+            self.encoder = HubertEncoder(config)
 
     def forward(
         self,
