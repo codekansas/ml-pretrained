@@ -442,6 +442,7 @@ class Hubert(nn.Module):
         return HubertPredictor(self, kmeans, device=device)
 
     def remove_weight_norm_(self) -> None:
+        assert isinstance(self.encoder, (HubertEncoderStableLayerNorm, HubertEncoder))
         self.encoder.remove_weight_norm_()
 
 
