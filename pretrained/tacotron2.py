@@ -512,6 +512,7 @@ class EncoderConfig:
     lora_alpha: float = conf_field(1.0, help="LoRA alpha")
     lora_dropout: float = conf_field(0.0, help="LoRA dropout")
     freeze_bn: bool = conf_field(False, help="Freeze batch normalization")
+    speaker_emb_dim: int | None = conf_field(None, help="Speaker embedding dimension")
 
 
 class Encoder(nn.Module):
@@ -548,7 +549,7 @@ class Encoder(nn.Module):
         )
         self.lstm = maybe_lora(lstm, r=config.lora_rank, alpha=config.lora_alpha, dropout=config.lora_dropout)
 
-    def forward(self, x: Tensor, input_lengths: Tensor) -> Tensor:
+    def forward(self, x: Tensor, input_lengths: Tensor, speaker_emb: Tensor | None = None) -> Tensor:
         for conv in self.convolutions:
             x = F.dropout(F.relu(conv(x)), 0.5, self.training)
 
@@ -562,9 +563,12 @@ class Encoder(nn.Module):
 
         outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
 
+        if speaker_emb is not None:
+            outputs += speaker_emb.unsqueeze(1)
+
         return outputs
 
-    def infer(self, x: Tensor, input_lengths: Tensor) -> Tensor:
+    def infer(self, x: Tensor, input_lengths: Tensor, speaker_emb: Tensor | None = None) -> Tensor:
         for conv in self.convolutions:
             x = F.dropout(F.relu(conv(x)), 0.5, self.training)
 
@@ -575,6 +579,9 @@ class Encoder(nn.Module):
         outputs, _ = self.lstm(x)
 
         outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
+
+        if speaker_emb is not None:
+            outputs += speaker_emb.unsqueeze(1)
 
         return outputs
 
@@ -1119,10 +1126,11 @@ class Tacotron(BaseModel):
         self,
         inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
         states: DecoderStates | None = None,
+        speaker_emb: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates]:
         text_inputs, text_lengths, mels, _, output_lengths = inputs
-        embedded_inputs = self.embedding(text_inputs).transpose(1, 2)
-        encoder_outputs = self.encoder(embedded_inputs, text_lengths)
+        embedded_inputs = self.embedding.forward(text_inputs).transpose(1, 2)
+        encoder_outputs = self.encoder.forward(embedded_inputs, text_lengths, speaker_emb)
         mel_outputs, gate_outputs, alignments, states = self.decoder(encoder_outputs, mels, text_lengths, states)
         mel_outputs_postnet = mel_outputs + self.postnet(mel_outputs)
         return self.parse_output((mel_outputs, mel_outputs_postnet, gate_outputs, alignments, states), output_lengths)
@@ -1132,9 +1140,10 @@ class Tacotron(BaseModel):
         inputs: Tensor,
         input_lengths: Tensor,
         states: DecoderStates | None = None,
+        speaker_emb: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates]:
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
-        encoder_outputs = self.encoder.infer(embedded_inputs, input_lengths)
+        encoder_outputs = self.encoder.infer(embedded_inputs, input_lengths, speaker_emb)
         mel_outputs, gate_outputs, alignments, states = self.decoder.infer(encoder_outputs, input_lengths, states)
         mel_outputs_postnet = mel_outputs + self.postnet(mel_outputs)
         return self.parse_output((mel_outputs, mel_outputs_postnet, gate_outputs, alignments, states))
