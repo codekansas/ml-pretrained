@@ -1124,11 +1124,11 @@ class Tacotron(BaseModel):
 
     def forward(
         self,
-        inputs: tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
+        inputs: tuple[Tensor, Tensor, Tensor, Tensor],
         states: DecoderStates | None = None,
         speaker_emb: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, DecoderStates]:
-        text_inputs, text_lengths, mels, _, output_lengths = inputs
+        text_inputs, text_lengths, mels, output_lengths = inputs
         embedded_inputs = self.embedding.forward(text_inputs).transpose(1, 2)
         encoder_outputs = self.encoder.forward(embedded_inputs, text_lengths, speaker_emb)
         mel_outputs, gate_outputs, alignments, states = self.decoder(encoder_outputs, mels, text_lengths, states)
