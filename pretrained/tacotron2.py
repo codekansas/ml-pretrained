@@ -181,7 +181,7 @@ def text_clean_func(lower: bool = True) -> Callable[[str], str]:
     try:
         normalizer: Callable[[str], str] = Normalizer()
     except ImportError:
-        logger.warning("Please install inflect: pip install inflect")
+        logger.warning("Please install inflect and make sure it can be imported: pip install inflect")
 
         def normalizer(x: str) -> str:
             return x
