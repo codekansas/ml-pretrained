@@ -1392,7 +1392,6 @@ def test_tacotron_adhoc() -> None:
     tts = pretrained_tacotron2_tts()
 
     def generate_for_text(texts: Iterable[str]) -> None:
-
         for text in texts:
             logger.info("Generating audio for '%s'", text)
             audio, _ = tts.generate(text, postnet=True)
