@@ -49,7 +49,7 @@ import torch
 import torch.nn.functional as F
 from ml.core.config import conf_field
 from ml.models.base import BaseModel, BaseModelConfig
-from ml.models.lora import maybe_lora
+from ml.models.lora import freeze_non_lora_, maybe_lora, reset_lora_weights_
 from ml.utils.audio import write_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import AutoDevice
@@ -181,7 +181,7 @@ def text_clean_func(lower: bool = True) -> Callable[[str], str]:
     try:
         normalizer: Callable[[str], str] = Normalizer()
     except ImportError:
-        logger.warning("Please install inflect: pip install inflect")
+        logger.warning("Please install inflect and make sure it can be imported: pip install inflect")
 
         def normalizer(x: str) -> str:
             return x
@@ -215,12 +215,14 @@ class LinearNorm(nn.Module):
         bias: bool = True,
         w_init_gain: str = "linear",
         lora_rank: int | None = None,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
         linear_layer = nn.Linear(in_dim, out_dim, bias=bias)
         nn.init.xavier_uniform_(linear_layer.weight, gain=nn.init.calculate_gain(w_init_gain))
-        self.linear_layer = maybe_lora(linear_layer, r=lora_rank)
+        self.linear_layer = maybe_lora(linear_layer, r=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.linear_layer(x)
@@ -238,6 +240,8 @@ class ConvNorm(nn.Module):
         bias: bool = True,
         w_init_gain: str = "linear",
         lora_rank: int | None = None,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -254,7 +258,7 @@ class ConvNorm(nn.Module):
             dilation=dilation,
             bias=bias,
         )
-        self.conv = maybe_lora(conv, r=lora_rank)
+        self.conv = maybe_lora(conv, r=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
 
         nn.init.xavier_uniform_(self.conv.weight, gain=nn.init.calculate_gain(w_init_gain))
 
@@ -269,6 +273,8 @@ class LocationLayer(nn.Module):
         attention_kernel_size: int,
         attention_dim: int,
         lora_rank: int | None = None,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -282,6 +288,8 @@ class LocationLayer(nn.Module):
             stride=1,
             dilation=1,
             lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
         )
         self.location_dense = LinearNorm(
             attention_n_filters,
@@ -289,6 +297,8 @@ class LocationLayer(nn.Module):
             bias=False,
             w_init_gain="tanh",
             lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
         )
 
     def forward(self, attention_weights_cat: Tensor) -> Tensor:
@@ -307,6 +317,8 @@ class Attention(nn.Module):
         attention_location_n_filters: int,
         attention_location_kernel_size: int,
         lora_rank: int | None = None,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -316,16 +328,33 @@ class Attention(nn.Module):
             bias=False,
             w_init_gain="tanh",
             lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
         )
         self.memory_layer = LinearNorm(
-            embedding_dim, attention_dim, bias=False, w_init_gain="tanh", lora_rank=lora_rank
+            embedding_dim,
+            attention_dim,
+            bias=False,
+            w_init_gain="tanh",
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
         )
-        self.v = LinearNorm(attention_dim, 1, bias=False, lora_rank=lora_rank)
+        self.v = LinearNorm(
+            attention_dim,
+            1,
+            bias=False,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+        )
         self.location_layer = LocationLayer(
             attention_location_n_filters,
             attention_location_kernel_size,
             attention_dim,
             lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
         )
         self.score_mask_value = -float("inf")
 
@@ -365,13 +394,22 @@ class Prenet(nn.Module):
         sizes: list[int] = [256, 256],
         dropout: float = 0.5,
         lora_rank: int | None = None,
+        lora_alpha: float = 1.0,
+        lora_dropout: float = 0.0,
         dropout_always_on: bool = True,
     ) -> None:
         super().__init__()
 
         in_sizes = [in_dim] + sizes[:-1]
         layers = [
-            LinearNorm(in_size, out_size, bias=False, lora_rank=lora_rank)
+            LinearNorm(
+                in_size,
+                out_size,
+                bias=False,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+            )
             for (in_size, out_size) in zip(in_sizes, sizes)
         ]
         self.layers = nn.ModuleList(layers)
@@ -391,6 +429,8 @@ class PostnetConfig:
     kernel_size: int = conf_field(5, help="Postnet kernel size")
     n_convolutions: int = conf_field(5, help="Number of postnet convolutions")
     lora_rank: int | None = conf_field(None, help="LoRA rank")
+    lora_alpha: float = conf_field(1.0, help="LoRA alpha")
+    lora_dropout: float = conf_field(0.0, help="LoRA dropout")
 
 
 class Postnet(nn.Module):
@@ -410,6 +450,8 @@ class Postnet(nn.Module):
                     dilation=1,
                     w_init_gain="tanh",
                     lora_rank=config.lora_rank,
+                    lora_alpha=config.lora_alpha,
+                    lora_dropout=config.lora_dropout,
                 ),
                 nn.BatchNorm1d(config.emb_dim),
             )
@@ -427,6 +469,8 @@ class Postnet(nn.Module):
                         dilation=1,
                         w_init_gain="tanh",
                         lora_rank=config.lora_rank,
+                        lora_alpha=config.lora_alpha,
+                        lora_dropout=config.lora_dropout,
                     ),
                     nn.BatchNorm1d(config.emb_dim),
                 )
@@ -443,6 +487,8 @@ class Postnet(nn.Module):
                     dilation=1,
                     w_init_gain="linear",
                     lora_rank=config.lora_rank,
+                    lora_alpha=config.lora_alpha,
+                    lora_dropout=config.lora_dropout,
                 ),
                 nn.BatchNorm1d(config.n_mel_channels),
             )
@@ -463,6 +509,8 @@ class EncoderConfig:
     kernel_size: int = conf_field(5, help="Encoder kernel size")
     n_convolutions: int = conf_field(3, help="Number of encoder convolutions")
     lora_rank: int | None = conf_field(None, help="LoRA rank")
+    lora_alpha: float = conf_field(1.0, help="LoRA alpha")
+    lora_dropout: float = conf_field(0.0, help="LoRA dropout")
     freeze_bn: bool = conf_field(False, help="Freeze batch normalization")
 
 
@@ -481,6 +529,8 @@ class Encoder(nn.Module):
                 dilation=1,
                 w_init_gain="relu",
                 lora_rank=config.lora_rank,
+                lora_alpha=config.lora_alpha,
+                lora_dropout=config.lora_dropout,
             )
             batch_norm = nn.BatchNorm1d(config.emb_dim)
             if config.freeze_bn:
@@ -496,7 +546,7 @@ class Encoder(nn.Module):
             batch_first=True,
             bidirectional=True,
         )
-        self.lstm = maybe_lora(lstm, config.lora_rank)
+        self.lstm = maybe_lora(lstm, r=config.lora_rank, alpha=config.lora_alpha, dropout=config.lora_dropout)
 
     def forward(self, x: Tensor, input_lengths: Tensor) -> Tensor:
         for conv in self.convolutions:
@@ -547,6 +597,8 @@ class DecoderConfig:
     p_decoder_dropout: float = conf_field(0.1, help="Dropout probability for decoder LSTM")
     prenet_dropout_always_on: bool = conf_field(True, help="If set, prenet dropout is always on")
     lora_rank: int | None = conf_field(None, help="LoRA rank")
+    lora_alpha: float = conf_field(1.0, help="LoRA alpha")
+    lora_dropout: float = conf_field(0.0, help="LoRA dropout")
 
 
 class DecoderStates(NamedTuple):
@@ -582,10 +634,21 @@ class Decoder(nn.Module):
             [config.prenet_dim, config.prenet_dim],
             config.prenet_dropout,
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
             dropout_always_on=config.prenet_dropout_always_on,
         )
 
-        self.attention_rnn = nn.LSTMCell(config.prenet_dim + config.encoder_emb_dim, config.attention_rnn_dim)
+        attention_rnn = nn.LSTMCell(
+            config.prenet_dim + config.encoder_emb_dim,
+            config.attention_rnn_dim,
+        )
+        self.attention_rnn = maybe_lora(
+            attention_rnn,
+            r=config.lora_rank,
+            alpha=config.lora_alpha,
+            dropout=config.lora_dropout,
+        )
 
         self.attention_layer = Attention(
             config.attention_rnn_dim,
@@ -594,18 +657,28 @@ class Decoder(nn.Module):
             config.attention_location_n_filters,
             config.attention_location_kernel_size,
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
         )
 
-        self.decoder_rnn = nn.LSTMCell(
+        decoder_rnn = nn.LSTMCell(
             config.attention_rnn_dim + config.encoder_emb_dim,
             config.decoder_rnn_dim,
             bias=True,
+        )
+        self.decoder_rnn = maybe_lora(
+            decoder_rnn,
+            r=config.lora_rank,
+            alpha=config.lora_alpha,
+            dropout=config.lora_dropout,
         )
 
         self.linear_projection = LinearNorm(
             config.decoder_rnn_dim + config.encoder_emb_dim,
             config.n_mel_channels * config.n_frames_per_step,
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
         )
 
         self.gate_layer = LinearNorm(
@@ -614,6 +687,8 @@ class Decoder(nn.Module):
             bias=True,
             w_init_gain="sigmoid",
             lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+            lora_dropout=config.lora_dropout,
         )
 
     def get_go_frame(self, memory: Tensor) -> Tensor:
@@ -1126,25 +1201,48 @@ def pretrained_tacotron2(
     *,
     pretrained: bool = True,
     lora_rank: int | None = None,
+    lora_alpha: float = 1.0,
+    lora_dropout: float = 0.0,
+    lora_encoder: bool = True,
+    lora_decoder: bool = True,
+    lora_postnet: bool = True,
     device: torch.device | None = None,
     prenet_dropout: bool = True,
+    num_tokens: int | None = None,
 ) -> Tacotron:
     """Loads the pretrained Tacotron2 model.
 
     Args:
         pretrained: Whether to load the pretrained weights.
         lora_rank: The LoRA rank to use, if LoRA is desired.
+        lora_alpha: The LoRA alpha to use, if LoRA is desired.
+        lora_dropout: The LoRA dropout to use, if LoRA is desired.
+        lora_encoder: Whether to use LoRA in the encoder.
+        lora_decoder: Whether to use LoRA in the decoder.
+        lora_postnet: Whether to use LoRA in the postnet.
         device: The device to load the weights onto.
         prenet_dropout: Whether to use always apply dropout in the PreNet.
+        num_tokens: The number of tokens in the vocabulary.
 
     Returns:
         The pretrained Tacotron model.
     """
     config = TacotronConfig()
-    config.encoder.lora_rank = lora_rank
-    config.decoder.lora_rank = lora_rank
-    config.postnet.lora_rank = lora_rank
+    if lora_encoder:
+        config.encoder.lora_rank = lora_rank
+        config.encoder.lora_alpha = lora_alpha
+        config.encoder.lora_dropout = lora_dropout
+    if lora_decoder:
+        config.decoder.lora_rank = lora_rank
+        config.decoder.lora_alpha = lora_alpha
+        config.decoder.lora_dropout = lora_dropout
+    if lora_postnet:
+        config.postnet.lora_rank = lora_rank
+        config.postnet.lora_alpha = lora_alpha
+        config.postnet.lora_dropout = lora_dropout
     config.decoder.prenet_dropout_always_on = prenet_dropout
+    if num_tokens is not None:
+        config.n_symbols = num_tokens
 
     if not pretrained:
         return Tacotron(config)
@@ -1161,6 +1259,13 @@ def pretrained_tacotron2(
         ckpt = torch.load(filepath, map_location=device)
         model._apply(meta_to_empty_func(device))
         model.load_state_dict({k: v for k, v in ckpt["state_dict"].items()})
+        reset_lora_weights_(model)
+
+    with Timer("freezing weights", spinner=True):
+        if lora_rank is not None:
+            freeze_non_lora_(model)
+        if num_tokens is not None:
+            model.embedding.requires_grad_(True)
 
     return model
 
@@ -1281,15 +1386,15 @@ def test_tacotron_adhoc() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("text", type=str, nargs="?", help="The text to synthesize.")
     parser.add_argument("-o", "--out-file", type=str, default=None, help="The output file.")
+    parser.add_argument("-p", "--prompt", default="Text: ", help="The prompt to use.")
     args = parser.parse_args()
 
     tts = pretrained_tacotron2_tts()
 
     def generate_for_text(texts: Iterable[str]) -> None:
-        states: DecoderStates | None = None
-
         for text in texts:
-            audio, states = tts.generate(text, postnet=True, states=states).cpu()
+            logger.info("Generating audio for '%s'", text)
+            audio, _ = tts.generate(text, postnet=True)
 
             if args.out_file is None:
                 try:
@@ -1297,7 +1402,7 @@ def test_tacotron_adhoc() -> None:
                 except ImportError:
                     raise ImportError("Please install sounddevice to play audio: pip install sounddevice")
 
-                audio = audio.numpy().T
+                audio = audio.cpu().numpy().T
                 sd.play(audio, tts.sampling_rate, blocking=True)
 
             else:
@@ -1311,10 +1416,13 @@ def test_tacotron_adhoc() -> None:
     else:
 
         def gen_texts() -> Iterable[str]:
-            text = input("Text: ")
-            while text:
-                yield text
-                text = input("Text: ")
+            try:
+                text = input(args.prompt)
+                while text:
+                    yield text
+                    text = input(args.prompt)
+            except EOFError:
+                pass
 
         generate_for_text(gen_texts())
 
