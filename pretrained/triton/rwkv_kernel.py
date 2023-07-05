@@ -387,8 +387,10 @@ def wkv_triton_with_eps_backward(
         assert t.device == device, f"{t.device} != {device}"
 
     # New tensors to output.
-    gw = torch.zeros_like(w)
-    gu = torch.zeros_like(u)
+    non_bf16_dtype_w = torch.float16 if w.dtype == torch.bfloat16 else w.dtype
+    non_bf16_dtype_u = torch.float16 if u.dtype == torch.bfloat16 else u.dtype
+    gw = torch.zeros_like(w, dtype=non_bf16_dtype_w)
+    gu = torch.zeros_like(u, dtype=non_bf16_dtype_u)
     gk = torch.empty_like(k)
     gv = torch.empty_like(v)
     gstate = k.new_empty(bsz, 3, 1, chans)
@@ -459,7 +461,7 @@ def wkv_triton_with_eps_backward(
         BLOCK_SIZE_C=block_size_c,
     )
 
-    return gw, gu, gk, gv, gstate
+    return gw.to(w), gu.to(u), gk, gv, gstate
 
 
 class WKVWithEpsTritonFunction(Function):
@@ -877,8 +879,10 @@ def wkv_triton_log_space_backward(
         assert t.device == device, f"{t.device} != {device}"
 
     # New tensors to output.
-    gw = torch.zeros_like(w)
-    gu = torch.zeros_like(u)
+    non_bf16_dtype_w = torch.float16 if w.dtype == torch.bfloat16 else w.dtype
+    non_bf16_dtype_u = torch.float16 if u.dtype == torch.bfloat16 else u.dtype
+    gw = torch.zeros_like(w, dtype=non_bf16_dtype_w)
+    gu = torch.zeros_like(u, dtype=non_bf16_dtype_u)
     gk = torch.empty_like(k)
     gv = torch.empty_like(v)
     gstate = k.new_empty(bsz, 3, 1, chans)
@@ -950,7 +954,7 @@ def wkv_triton_log_space_backward(
         BLOCK_SIZE_C=block_size_c,
     )
 
-    return gw, gu, gk, gv, gstate
+    return gw.to(w), gu.to(u), gk, gv, gstate
 
 
 class WKVLogSpaceTritonFunction(Function):
