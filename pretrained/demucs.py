@@ -13,7 +13,7 @@ part of the input waveform.
 import functools
 import math
 import time
-from typing import cast
+from typing import Type, cast
 
 import ml.api as ml
 import torch
@@ -128,11 +128,13 @@ class Encoder(nn.Module):
         self.conv_a = nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride)
         self.conv_b = nn.Conv1d(out_channels, out_channels * 2, 1)
         self.act = ml.get_activation(act)
-        self.glu = nn.GLU()
+        self.glu = nn.GLU(dim=1)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.act(self.conv_a(x))
-        x = self.glu(self.conv_b(x))
+        x = self.conv_a(x)
+        x = self.act(x)
+        x = self.conv_b(x)
+        x = self.glu(x)
         return x
 
 
@@ -150,7 +152,7 @@ class Decoder(nn.Module):
         self.conv_a = nn.Conv1d(in_channels, in_channels * 2, 1, stride=1)
         self.conv_b = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride=stride)
         self.act = ml.get_activation(act)
-        self.glu = nn.GLU()
+        self.glu = nn.GLU(dim=1)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.glu(self.conv_a(x))
@@ -219,20 +221,24 @@ class Demucs(nn.Module):
         self.floor = floor
         self.sample_rate = sample_rate
 
-        self.encoder = cast(list[Encoder], nn.ModuleList())
-        self.decoder = cast(list[Decoder], nn.ModuleList())
+        encoders: list[Encoder] = []
+        decoders: list[Decoder] = []
 
         for index in range(depth):
             encoder = Encoder(in_channels, hidden, kernel_size, stride)
             decoder = Decoder(hidden, out_channels, kernel_size, stride, act="relu" if index > 0 else "no_act")
-            self.encoder.append(encoder)
-            self.decoder.insert(0, decoder)
+            encoders.append(encoder)
+            decoders.append(decoder)
             in_channels = hidden
+            out_channels = hidden
             hidden = min(int(growth * hidden), max_hidden)
 
         self.lstm = RNN(in_channels, bi=not causal)
         if rescale:
             rescale_module(self, reference=rescale)
+
+        self.encoders = cast(list[Encoder], nn.ModuleList(encoders))
+        self.decoders = cast(list[Decoder], nn.ModuleList(decoders[::-1]))
 
     def valid_length(self, length: int) -> int:
         """Returns the nearest valid length to use with the model.
@@ -281,13 +287,13 @@ class Demucs(nn.Module):
             x = upsample2(x)
             x = upsample2(x)
         skips = []
-        for encode in self.encoder:
+        for encode in self.encoders:
             x = encode(x)
             skips.append(x)
         x = x.permute(2, 0, 1)
-        x, _ = self.lstm(x)
+        x, _ = self.lstm.forward(x)
         x = x.permute(1, 2, 0)
-        for decode in self.decoder:
+        for decode in self.decoders:
             skip = skips.pop(-1)
             x = x + skip[..., : x.shape[-1]]
             x = decode(x)
@@ -309,7 +315,7 @@ class Demucs(nn.Module):
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: BaseDevice | None = None,
+        device: Type[BaseDevice] | None = None,
     ) -> "DemucsStreamer":
         """Gets a streamer for the current model.
 
@@ -344,7 +350,7 @@ class DemucsStreamer:
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: BaseDevice | None = None,
+        device: Type[BaseDevice] | None = None,
     ) -> None:
         self.device = AutoDevice.detect_device() if device is None else device
         self.demucs = demucs
@@ -444,7 +450,7 @@ class DemucsStreamer:
         next_state: list[Tensor] = []
         stride = self.stride * self.demucs.resample
         x = frame[None]
-        for idx, encode in enumerate(self.demucs.encoder):
+        for idx, encode in enumerate(self.demucs.encoders):
             stride //= self.demucs.stride
             length = x.shape[2]
             if idx == self.demucs.depth - 1:
@@ -477,7 +483,7 @@ class DemucsStreamer:
         # extra contains extra samples to the right, and is used only as a
         # better padding for the online resampling.
         extra: Tensor | None = None
-        for idx, decode in enumerate(self.demucs.decoder):
+        for idx, decode in enumerate(self.demucs.decoders):
             skip = skips.pop(-1)
             x += skip[..., : x.shape[-1]]
             x = fast_conv(decode.conv_a, x)
