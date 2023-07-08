@@ -13,7 +13,7 @@ part of the input waveform.
 import functools
 import math
 import time
-from typing import cast
+from typing import Type, cast
 
 import ml.api as ml
 import torch
@@ -315,7 +315,7 @@ class Demucs(nn.Module):
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: BaseDevice | None = None,
+        device: Type[BaseDevice] | None = None,
     ) -> "DemucsStreamer":
         """Gets a streamer for the current model.
 
@@ -350,7 +350,7 @@ class DemucsStreamer:
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: BaseDevice | None = None,
+        device: Type[BaseDevice] | None = None,
     ) -> None:
         self.device = AutoDevice.detect_device() if device is None else device
         self.demucs = demucs
