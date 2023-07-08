@@ -128,11 +128,13 @@ class Encoder(nn.Module):
         self.conv_a = nn.Conv1d(in_channels, out_channels, kernel_size, stride=stride)
         self.conv_b = nn.Conv1d(out_channels, out_channels * 2, 1)
         self.act = ml.get_activation(act)
-        self.glu = nn.GLU()
+        self.glu = nn.GLU(dim=1)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.act(self.conv_a(x))
-        x = self.glu(self.conv_b(x))
+        x = self.conv_a(x)
+        x = self.act(x)
+        x = self.conv_b(x)
+        x = self.glu(x)
         return x
 
 
@@ -150,7 +152,7 @@ class Decoder(nn.Module):
         self.conv_a = nn.Conv1d(in_channels, in_channels * 2, 1, stride=1)
         self.conv_b = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride=stride)
         self.act = ml.get_activation(act)
-        self.glu = nn.GLU()
+        self.glu = nn.GLU(dim=1)
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.glu(self.conv_a(x))
@@ -228,6 +230,7 @@ class Demucs(nn.Module):
             self.encoder.append(encoder)
             self.decoder.insert(0, decoder)
             in_channels = hidden
+            out_channels = hidden
             hidden = min(int(growth * hidden), max_hidden)
 
         self.lstm = RNN(in_channels, bi=not causal)
