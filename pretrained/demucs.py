@@ -221,14 +221,14 @@ class Demucs(nn.Module):
         self.floor = floor
         self.sample_rate = sample_rate
 
-        self.encoder = cast(list[Encoder], nn.ModuleList())
-        self.decoder = cast(list[Decoder], nn.ModuleList())
+        encoders: list[Encoder] = []
+        decoders: list[Decoder] = []
 
         for index in range(depth):
             encoder = Encoder(in_channels, hidden, kernel_size, stride)
             decoder = Decoder(hidden, out_channels, kernel_size, stride, act="relu" if index > 0 else "no_act")
-            self.encoder.append(encoder)
-            self.decoder.insert(0, decoder)
+            encoders.append(encoder)
+            decoders.append(decoder)
             in_channels = hidden
             out_channels = hidden
             hidden = min(int(growth * hidden), max_hidden)
@@ -236,6 +236,9 @@ class Demucs(nn.Module):
         self.lstm = RNN(in_channels, bi=not causal)
         if rescale:
             rescale_module(self, reference=rescale)
+
+        self.encoders = cast(list[Encoder], nn.ModuleList(encoders))
+        self.decoders = cast(list[Decoder], nn.ModuleList(decoders[::-1]))
 
     def valid_length(self, length: int) -> int:
         """Returns the nearest valid length to use with the model.
@@ -284,13 +287,13 @@ class Demucs(nn.Module):
             x = upsample2(x)
             x = upsample2(x)
         skips = []
-        for encode in self.encoder:
+        for encode in self.encoders:
             x = encode(x)
             skips.append(x)
         x = x.permute(2, 0, 1)
-        x, _ = self.lstm(x)
+        x, _ = self.lstm.forward(x)
         x = x.permute(1, 2, 0)
-        for decode in self.decoder:
+        for decode in self.decoders:
             skip = skips.pop(-1)
             x = x + skip[..., : x.shape[-1]]
             x = decode(x)
@@ -447,7 +450,7 @@ class DemucsStreamer:
         next_state: list[Tensor] = []
         stride = self.stride * self.demucs.resample
         x = frame[None]
-        for idx, encode in enumerate(self.demucs.encoder):
+        for idx, encode in enumerate(self.demucs.encoders):
             stride //= self.demucs.stride
             length = x.shape[2]
             if idx == self.demucs.depth - 1:
@@ -480,7 +483,7 @@ class DemucsStreamer:
         # extra contains extra samples to the right, and is used only as a
         # better padding for the online resampling.
         extra: Tensor | None = None
-        for idx, decode in enumerate(self.demucs.decoder):
+        for idx, decode in enumerate(self.demucs.decoders):
             skip = skips.pop(-1)
             x += skip[..., : x.shape[-1]]
             x = fast_conv(decode.conv_a, x)
