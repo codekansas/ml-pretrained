@@ -54,6 +54,12 @@ DEFAULT_PIXEL_MEAN = (123.675, 116.28, 103.53)
 DEFAULT_PIXEL_STD = (58.395, 57.12, 57.375)
 
 
+def cast_pretrained_sam_size(s: str) -> PretrainedSamSize:
+    if s not in get_args(PretrainedSamSize):
+        raise KeyError(f"Invalid SAM size: {s} Expected one of: {get_args(PretrainedSamSize)}")
+    return cast(PretrainedSamSize, s)
+
+
 @dataclass
 class PretrainedModelConfig:
     url: str

@@ -73,9 +73,9 @@ PretrainedClipSize = Literal[
 ]
 
 
-def cast_pretrained_model_key(s: str) -> PretrainedClipSize:
-    args = get_args(PretrainedClipSize)
-    assert s in args, f"Invalid pretraiend model key: '{s}' Valid options are {args}"
+def cast_pretrained_clip_key(s: str) -> PretrainedClipSize:
+    if s not in get_args(PretrainedClipSize):
+        raise KeyError(f"Invalid CLIP size: {s} Expected one of: {get_args(PretrainedClipSize)}")
     return cast(PretrainedClipSize, s)
 
 

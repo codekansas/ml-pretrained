@@ -24,7 +24,7 @@ The choices for the model key are:
 import argparse
 import logging
 from dataclasses import dataclass
-from typing import Literal, Sequence, Union, get_args
+from typing import Literal, Sequence, Union, cast, get_args
 
 import numpy as np
 import PIL.Image
@@ -65,6 +65,12 @@ PretrainedBlipKey = Literal[
     "ViT-L-Flickr30k",
     "ViT-L-Coco-Captioning",
 ]
+
+
+def cast_pretrained_blip_key(s: str) -> PretrainedBlipKey:
+    if s not in get_args(PretrainedBlipKey):
+        raise KeyError(f"Invalid BLIP size: {s} Expected one of: {get_args(PretrainedBlipKey)}")
+    return cast(PretrainedBlipKey, s)
 
 
 @dataclass
