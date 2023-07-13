@@ -35,7 +35,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Literal, get_args
+from typing import Iterator, Literal, cast, get_args
 
 import torch
 import torch.nn.functional as F
@@ -57,6 +57,12 @@ from torch import Tensor, nn
 logger = logging.getLogger(__name__)
 
 PretrainedLlamaKey = Literal["7B", "13B", "30B", "65B"]
+
+
+def cast_pretrained_llama_key(s: str) -> PretrainedLlamaKey:
+    if s not in get_args(PretrainedLlamaKey):
+        raise KeyError(f"Invalid LLaMa key: {s} Expected one of: {get_args(PretrainedLlamaKey)}")
+    return cast(PretrainedLlamaKey, s)
 
 
 @dataclass

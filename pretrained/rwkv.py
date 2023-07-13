@@ -73,6 +73,12 @@ State = tuple[AttentionState, FeedForwardState]
 EPS = 1e-4
 
 
+def cast_pretrained_rwkv_key(s: str) -> PretrainedRwkvKey:
+    if s not in get_args(PretrainedRwkvKey):
+        raise KeyError(f"Invalid RWKV size: {s} Expected one of: {get_args(PretrainedRwkvKey)}")
+    return cast(PretrainedRwkvKey, s)
+
+
 @dataclass
 class ModelArgs:
     url: str

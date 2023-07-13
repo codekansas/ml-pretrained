@@ -43,6 +43,12 @@ from torch import Tensor, nn
 PretrainedHubertSize = Literal["base", "large", "extra_large"]
 
 
+def cast_pretrained_hubert_size(s: str) -> PretrainedHubertSize:
+    if s not in get_args(PretrainedHubertSize):
+        raise KeyError(f"Invalid HuBERT key: {s} Expected one of: {get_args(PretrainedHubertSize)}")
+    return cast(PretrainedHubertSize, s)
+
+
 @dataclass
 class HubertConfig:
     vocab_size: int
