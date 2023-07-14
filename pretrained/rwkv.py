@@ -848,7 +848,10 @@ class Rwkv(nn.Module):
 
 
 def get_tokenizer() -> Any:
-    from tokenizers import Tokenizer
+    try:
+        from tokenizers import Tokenizer
+    except (ModuleNotFoundError, ImportError):
+        raise ModuleNotFoundError("Install the `tokenizers` package: `pip install tokenizers`")
 
     with Timer("downloading tokenizer"):
         tokenizer_path = ensure_downloaded(TOKENIZER_URL, "rwkv", "tokenizer.json")
@@ -990,8 +993,8 @@ def pretrained_rwkv(
         )
 
     if empty:
-        model._apply(meta_to_empty_func(device.get_device(), torch.bfloat16))
-        model._apply(lambda x: device.tensor_to(x))
+        model._apply(meta_to_empty_func(torch.device("cpu"), torch.bfloat16))
+        device.module_to(model)
         reset_lora_weights_(model)
         return model
 
@@ -1003,9 +1006,9 @@ def pretrained_rwkv(
 
     # Build the transformer and loads the checkpoint.
     with Timer("loading state dict", spinner=True):
-        model._apply(meta_to_empty_func(device.get_device(), torch.bfloat16))
+        model._apply(meta_to_empty_func(torch.device("cpu"), torch.bfloat16))
         model.load_state_dict(ckpt)
-        model._apply(lambda x: device.tensor_to(x))
+        device.module_to(model)
         reset_lora_weights_(model)
 
     return model
