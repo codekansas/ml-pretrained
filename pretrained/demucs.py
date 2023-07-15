@@ -13,7 +13,7 @@ part of the input waveform.
 import functools
 import math
 import time
-from typing import Type, cast
+from typing import cast
 
 import ml.api as ml
 import torch
