@@ -315,7 +315,7 @@ class Demucs(nn.Module):
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: Type[base_device] | None = None,
+        device: base_device | None = None,
     ) -> "DemucsStreamer":
         """Gets a streamer for the current model.
 
@@ -350,7 +350,7 @@ class DemucsStreamer:
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: Type[base_device] | None = None,
+        device: base_device | None = None,
     ) -> None:
         self.device = detect_device() if device is None else device
         self.demucs = demucs
