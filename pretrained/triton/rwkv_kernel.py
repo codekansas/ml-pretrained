@@ -324,21 +324,21 @@ def wkv_triton_with_eps_backward_kernel(
 
         # Backpropagates alpha gradients.
         galpha_we = galpha * e1 * alpha_prev
-        gw += galpha_we
+        gw -= galpha_we
         gk += galpha * e2 * vt
         gv += galpha * e2
         geps += galpha * -alpha_curr
 
         # Backpropagates beta gradients.
         gbeta_we = gbeta * e1 * beta_prev
-        gw += gbeta_we
+        gw -= gbeta_we
         gk += gbeta * e2
         geps += gbeta * -beta_curr
 
         # Backpropagates epsilon gradients.
         geps_mask = w + eps_prev > kt
         geps_we = tl.where(geps_mask, geps, tl.zeros_like(geps))
-        gw += geps_we
+        gw -= geps_we
         gk += tl.where(geps_mask, tl.zeros_like(geps), geps)
 
         # Stores the gradients for k and v.
@@ -359,7 +359,7 @@ def wkv_triton_with_eps_backward_kernel(
     tl.store(geps_ptr + gstate_s_c * cs, geps, mask=cmask)
 
     # Stores final gradients for w and u.
-    tl.atomic_add(gw_ptr + gw_s_c * cs, -gw, mask=cmask)
+    tl.atomic_add(gw_ptr + gw_s_c * cs, gw, mask=cmask)
     tl.atomic_add(gu_ptr + gu_s_c * cs, gu, mask=cmask)
 
 
@@ -822,14 +822,14 @@ def wkv_triton_log_space_backward_kernel(
         gwa_m = gln_alpha_m / (1 + e_alpha_m)
         gkv_p = gln_alpha_p / (1 + (1 / e_alpha_p))
         gkv_m = gln_alpha_m / (1 + (1 / e_alpha_m))
-        gw += gwa_p + gwa_m
+        gw -= gwa_p + gwa_m
         gk += gkv_p + gkv_m
         gv += tl.where(vt > 0, gkv_p / vt_p, -gkv_m / vt_m)
 
         # Backpropagates beta gradients.
         e_beta = tl.exp(kt - (w + ln_beta_prev))
         gwb = gln_beta / (1 + e_beta)
-        gw += gwb
+        gw -= gwb
         gk += gln_beta / (1 + (1 / e_beta))
 
         # Stores the gradients for k and v.
@@ -850,7 +850,7 @@ def wkv_triton_log_space_backward_kernel(
     tl.store(gln_beta_ptr + gstate_s_c * cs, gln_beta, mask=cmask)
 
     # Stores final gradients for w and u.
-    tl.atomic_add(gw_ptr + gw_s_c * cs, -gw, mask=cmask)
+    tl.atomic_add(gw_ptr + gw_s_c * cs, gw, mask=cmask)
     tl.atomic_add(gu_ptr + gu_s_c * cs, gu, mask=cmask)
 
 
