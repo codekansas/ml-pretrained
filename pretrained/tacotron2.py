@@ -52,8 +52,8 @@ from ml.models.base import BaseModel, BaseModelConfig
 from ml.models.lora import freeze_non_lora_, maybe_lora, reset_lora_weights_
 from ml.utils.audio import write_audio
 from ml.utils.checkpoint import ensure_downloaded
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
@@ -1323,7 +1323,7 @@ class TTS:
         tacotron: Tacotron,
         vocoder: Vocoder,
         *,
-        device: BaseDevice | None = None,
+        device: base_device | None = None,
     ) -> None:
         """Provides an API for doing text-to-speech.
 
@@ -1337,7 +1337,7 @@ class TTS:
         """
         super().__init__()
 
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.tacotron = tacotron.eval()
         self.vocoder = vocoder.eval()
         self.vocoder.remove_weight_norm()
@@ -1382,7 +1382,7 @@ class TTS:
         return audio, states
 
 
-def pretrained_tacotron2_tts(vocoder_type: VocoderType = "hifigan", *, device: BaseDevice | None = None) -> TTS:
+def pretrained_tacotron2_tts(vocoder_type: VocoderType = "hifigan", *, device: base_device | None = None) -> TTS:
     tacotron = pretrained_tacotron2()
     vocoder = pretrained_vocoder(vocoder_type)
     tts = TTS(tacotron, vocoder, device=device)

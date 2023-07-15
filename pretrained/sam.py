@@ -39,8 +39,8 @@ import PIL.Image
 import torch
 import torch.nn.functional as F
 from ml.utils.checkpoint import ensure_downloaded
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -1255,7 +1255,7 @@ class ResizeLongestSide:
 
 
 class SamPredictor:
-    def __init__(self, sam_model: Sam, *, device: BaseDevice | None = None) -> None:
+    def __init__(self, sam_model: Sam, *, device: base_device | None = None) -> None:
         """Provides an API to do repeated mask predictions on an image.
 
         This predictor uses SAM to calculate the image embedding for an image,
@@ -1264,11 +1264,11 @@ class SamPredictor:
         Args:
             sam_model: The model to use for mask prediction.
             device: The device to use for prediction. If None, will use the
-                device returned by AutoDevice.detect_device().
+                device returned by detect_device().
         """
         super().__init__()
 
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.model = sam_model.eval()
         self.device.module_to(self.model)
         self.transform = ResizeLongestSide(sam_model.image_encoder.img_size)

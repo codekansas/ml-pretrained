@@ -44,8 +44,8 @@ from ml.core.config import conf_field
 from ml.core.env import get_model_dir
 from ml.models.lora import maybe_lora
 from ml.models.parallel import ColumnParallelLinear, ParallelEmbedding, RowParallelLinear
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.parallel import parallel_group_info
@@ -416,7 +416,7 @@ class Llama(nn.Module):
 
 
 class LlamaPredictor:
-    def __init__(self, llama_model: Llama, *, device: BaseDevice | None = None) -> None:
+    def __init__(self, llama_model: Llama, *, device: base_device | None = None) -> None:
         """Provides an API for sampling from the LLaMa model.
 
         Args:
@@ -429,7 +429,7 @@ class LlamaPredictor:
         """
         super().__init__()
 
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.device.module_to(llama_model)
         tokenizer = llama_model.tokenizer
         if tokenizer is None:
@@ -546,7 +546,7 @@ def empty_llama(key: PretrainedLlamaKey) -> Llama:
         model = Llama(model_args, tokenizer)
 
     with Timer("moving model to device", spinner=True):
-        device = AutoDevice.detect_device().get_device()
+        device = detect_device().get_device()
         model._apply(meta_to_empty_func(device, torch.half))
 
     def reset_params(module: nn.Module) -> None:

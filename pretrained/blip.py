@@ -36,8 +36,8 @@ from ml.models.activations import ActivationType, get_activation
 from ml.models.init import init_
 from ml.models.norms import NormType, get_norm_linear
 from ml.utils.checkpoint import ensure_downloaded
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
@@ -393,12 +393,12 @@ class Blip(nn.Module):
     def forward(self, img: Tensor) -> Tensor:
         return self.visual_encoder(img)
 
-    def predictor(self, device: BaseDevice | None = None) -> "BlipPredictor":
+    def predictor(self, device: base_device | None = None) -> "BlipPredictor":
         return BlipPredictor(self, device=device)
 
 
 class BlipPredictor:
-    def __init__(self, blip_model: Blip, *, device: BaseDevice | None = None) -> None:
+    def __init__(self, blip_model: Blip, *, device: base_device | None = None) -> None:
         """Provides an API for sampling from the BLIP model.
 
         Args:
@@ -408,7 +408,7 @@ class BlipPredictor:
         """
         super().__init__()
 
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.device.module_to(blip_model)
         self.model = blip_model
 
@@ -446,8 +446,8 @@ class BlipPredictor:
         return x
 
 
-def pretrained_blip(key: PretrainedBlipKey, *, device: BaseDevice | None = None) -> Blip:
-    device = AutoDevice.detect_device() if device is None else device
+def pretrained_blip(key: PretrainedBlipKey, *, device: base_device | None = None) -> Blip:
+    device = detect_device() if device is None else device
     model_args = PRETRAINED_MODEL_SIZES[key]
 
     with Timer("downloading checkpoint"):

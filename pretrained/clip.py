@@ -50,8 +50,8 @@ import torch
 import torch.nn.functional as F
 import torchvision
 from ml.utils.checkpoint import ensure_downloaded
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -849,12 +849,12 @@ class Clip(nn.Module):
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
-    def predictor(self, *, device: BaseDevice | None = None) -> "ClipPredictor":
+    def predictor(self, *, device: base_device | None = None) -> "ClipPredictor":
         return ClipPredictor(self, device=device)
 
 
 class ClipPredictor:
-    def __init__(self, clip_model: Clip, *, device: BaseDevice | None = None) -> None:
+    def __init__(self, clip_model: Clip, *, device: base_device | None = None) -> None:
         """Provides an API for doing predictions with a CLIP model.
 
         Note that this module is not an `nn.Module`, so you can use it in your
@@ -863,11 +863,11 @@ class ClipPredictor:
         Args:
             clip_model: The CLIP model to use for predictions
             device: The device to use for predictions. If None, will use the
-                device returned by AutoDevice.detect_device().
+                device returned by detect_device().
         """
         super().__init__()
 
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.model = clip_model.eval()
         self.device.module_to(self.model)
         self.tokenizer = self.model.linguistic.get_tokenizer()
@@ -1071,7 +1071,7 @@ def test_pretrained_model() -> None:
     neg_desc = "An Instagram photo of a cute puppy"
 
     # Loads the JIT'd model and the regular model.
-    auto_device = AutoDevice.detect_device()
+    auto_device = detect_device()
     jit_model = cast(Clip, torch.jit.load(get_pretrained_path(cast(PretrainedClipSize, args.key)), map_location="cpu"))
     model = pretrained_clip(jit_model, "all")
 

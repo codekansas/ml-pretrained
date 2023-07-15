@@ -34,8 +34,8 @@ from ml.models.activations import ActivationType, get_activation
 from ml.models.kmeans import KMeans
 from ml.utils.audio import Reader, get_audio_props, read_audio
 from ml.utils.checkpoint import ensure_downloaded
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -447,7 +447,7 @@ class Hubert(nn.Module):
         self,
         kmeans: KMeans | None = None,
         *,
-        device: BaseDevice | None = None,
+        device: base_device | None = None,
     ) -> "HubertPredictor":
         return HubertPredictor(self, kmeans, device=device)
 
@@ -462,7 +462,7 @@ class HubertPredictor:
         hubert_model: Hubert,
         kmeans: KMeans | None = None,
         *,
-        device: BaseDevice | None = None,
+        device: base_device | None = None,
     ) -> None:
         """Provides an API for doing predictoins with a HuBERT model.
 
@@ -474,14 +474,14 @@ class HubertPredictor:
             kmeans: The kmeans model to use for quantization. If `None`, don't
                 quantize.
             device: The device to use for predictions. If `None`, will use the
-                device returned by AutoDevice.detect_device().
+                device returned by detect_device().
         """
         super().__init__()
 
         # Remove weight norm for inference, if it exists.
         hubert_model.remove_weight_norm_()
 
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.model = hubert_model.eval()
         self.kmeans = kmeans.eval() if kmeans is not None else None
         self.device.module_to(self.model)

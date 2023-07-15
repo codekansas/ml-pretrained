@@ -7,7 +7,7 @@ provides an example of running the real-time model.
 import os
 
 import torch
-from ml.utils.device.auto import AutoDevice
+from ml.utils.device.auto import detect_device
 from torch import Tensor
 
 from pretrained.demucs import Demucs
@@ -19,7 +19,7 @@ def test_demucs_streamer_matches_training() -> None:
     os.environ["USE_FP32"] = "0"
     os.environ["USE_FP64"] = "1"
 
-    device = AutoDevice.detect_device()
+    device = detect_device()
 
     model = Demucs(
         in_channels=1,
