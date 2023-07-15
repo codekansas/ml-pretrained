@@ -53,8 +53,8 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from ml.models.lora import maybe_lora, reset_lora_weights_
 from ml.utils.checkpoint import ensure_downloaded
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from ml.utils.large_models import init_empty_weights, meta_to_empty_func
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
@@ -921,7 +921,7 @@ class RwkvPredictor:
 def pretrained_rwkv(
     key: PretrainedRwkvKey,
     *,
-    device: BaseDevice | None = None,
+    device: base_device | None = None,
     lora_rank: int | None = None,
     lora_alpha: float = 1.0,
     lora_dropout: float = 0.0,
@@ -943,7 +943,7 @@ def pretrained_rwkv(
     Args:
         key: The key of the pretrained model to load.
         device: The device to load the model onto. If None, the model will be
-            loaded onto the device returned by ``AutoDevice.detect_device()``.
+            loaded onto the device returned by ``detect_device()``.
         lora_rank: The rank of the LoRA decomposition to use.
         lora_alpha: The alpha parameter of the LoRA decomposition.
         lora_dropout: The dropout rate to use in the LoRA decomposition.
@@ -968,7 +968,7 @@ def pretrained_rwkv(
     Returns:
         The pretrained RWKV model.
     """
-    device = AutoDevice.detect_device() if device is None else device
+    device = detect_device() if device is None else device
     model_args = PRETRAINED_MODEL_SIZES[key]
 
     with Timer("building model skeleton", spinner=True), init_empty_weights():

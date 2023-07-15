@@ -13,13 +13,13 @@ part of the input waveform.
 import functools
 import math
 import time
-from typing import Type, cast
+from typing import cast
 
 import ml.api as ml
 import torch
 import torch.nn.functional as F
-from ml.utils.device.auto import AutoDevice
-from ml.utils.device.base import BaseDevice
+from ml.utils.device.auto import detect_device
+from ml.utils.device.base import base_device
 from torch import Tensor, nn
 
 
@@ -315,7 +315,7 @@ class Demucs(nn.Module):
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: Type[BaseDevice] | None = None,
+        device: base_device | None = None,
     ) -> "DemucsStreamer":
         """Gets a streamer for the current model.
 
@@ -327,7 +327,7 @@ class Demucs(nn.Module):
             resample_buffer: Size of the buffer of previous inputs/outputs
                 kept for resampling.
             device: The device to use for predictions. If `None`, will use the
-                device returned by AutoDevice.detect_device().
+                device returned by detect_device().
 
         Returns:
             A streamer for streaming from the current model.
@@ -350,9 +350,9 @@ class DemucsStreamer:
         num_frames: int = 1,
         resample_lookahead: int = 64,
         resample_buffer: int = 256,
-        device: Type[BaseDevice] | None = None,
+        device: base_device | None = None,
     ) -> None:
-        self.device = AutoDevice.detect_device() if device is None else device
+        self.device = detect_device() if device is None else device
         self.demucs = demucs
         self.device.module_to(self.demucs)
         self.lstm_state: Tensor | None = None
