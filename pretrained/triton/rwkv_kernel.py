@@ -85,7 +85,7 @@ def wkv_triton_with_eps_forward_kernel(
     alpha = tl.load(alpha_ptr + cs * state_s_c, mask=cmask).to(tl.float32)
     beta = tl.load(beta_ptr + cs * state_s_c, mask=cmask).to(tl.float32)
     eps = tl.load(eps_ptr + cs * state_s_c, mask=cmask).to(tl.float32)
-    w = tl.load(w_ptr + cs * w_s_c, mask=cmask).to(tl.float32)
+    w = -tl.load(w_ptr + cs * w_s_c, mask=cmask).to(tl.float32)
     u = tl.load(u_ptr + cs * u_s_c, mask=cmask).to(tl.float32)
 
     for t in range(tsz):
@@ -271,7 +271,7 @@ def wkv_triton_with_eps_backward_kernel(
     galpha = tl.load(galpha_out_ptr + gstate_out_s_c * cs, mask=cmask).to(tl.float32)
     gbeta = tl.load(gbeta_out_ptr + gstate_out_s_c * cs, mask=cmask).to(tl.float32)
     geps = tl.load(geps_out_ptr + gstate_out_s_c * cs, mask=cmask).to(tl.float32)
-    w = tl.load(w_ptr + w_s_c * cs, mask=cmask).to(tl.float32)
+    w = -tl.load(w_ptr + w_s_c * cs, mask=cmask).to(tl.float32)
     u = tl.load(u_ptr + u_s_c * cs, mask=cmask).to(tl.float32)
 
     # Gradient accumulators.
@@ -359,7 +359,7 @@ def wkv_triton_with_eps_backward_kernel(
     tl.store(geps_ptr + gstate_s_c * cs, geps, mask=cmask)
 
     # Stores final gradients for w and u.
-    tl.atomic_add(gw_ptr + gw_s_c * cs, gw, mask=cmask)
+    tl.atomic_add(gw_ptr + gw_s_c * cs, -gw, mask=cmask)
     tl.atomic_add(gu_ptr + gu_s_c * cs, gu, mask=cmask)
 
 
@@ -568,7 +568,7 @@ def wkv_triton_log_space_forward_kernel(
     ln_alpha_p = tl.load(ln_alpha_p_ptr + cs * state_s_c, mask=cmask).to(tl.float32)
     ln_alpha_m = tl.load(ln_alpha_m_ptr + cs * state_s_c, mask=cmask).to(tl.float32)
     ln_beta = tl.load(ln_beta_ptr + cs * state_s_c, mask=cmask).to(tl.float32)
-    w = tl.load(w_ptr + cs * w_s_c, mask=cmask).to(tl.float32)
+    w = -tl.load(w_ptr + cs * w_s_c, mask=cmask).to(tl.float32)
     u = tl.load(u_ptr + cs * u_s_c, mask=cmask).to(tl.float32)
 
     for t in range(tsz):
@@ -765,7 +765,7 @@ def wkv_triton_log_space_backward_kernel(
     gln_alpha_p = tl.load(galpha_p_out_ptr + gstate_out_s_c * cs, mask=cmask).to(tl.float32)
     gln_alpha_m = tl.load(galpha_m_out_ptr + gstate_out_s_c * cs, mask=cmask).to(tl.float32)
     gln_beta = tl.load(gbeta_out_ptr + gstate_out_s_c * cs, mask=cmask).to(tl.float32)
-    w = tl.load(w_ptr + w_s_c * cs, mask=cmask).to(tl.float32)
+    w = -tl.load(w_ptr + w_s_c * cs, mask=cmask).to(tl.float32)
     u = tl.load(u_ptr + u_s_c * cs, mask=cmask).to(tl.float32)
 
     # Gradient accumulators.
@@ -850,7 +850,7 @@ def wkv_triton_log_space_backward_kernel(
     tl.store(gln_beta_ptr + gstate_s_c * cs, gln_beta, mask=cmask)
 
     # Stores final gradients for w and u.
-    tl.atomic_add(gw_ptr + gw_s_c * cs, gw, mask=cmask)
+    tl.atomic_add(gw_ptr + gw_s_c * cs, -gw, mask=cmask)
     tl.atomic_add(gu_ptr + gu_s_c * cs, gu, mask=cmask)
 
 
