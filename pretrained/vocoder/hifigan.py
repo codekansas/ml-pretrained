@@ -280,18 +280,18 @@ class AudioToHifiGanMels(nn.Module):
     """Defines a module to convert from a waveform to the mels used by HiFi-GAN.
 
     The default parameters should be kept the same for pre-trained models.
+
+    Parameters:
+        sampling_rate: The sampling rate of the audio.
+        num_mels: The number of mel bins.
+        n_fft: The number of FFT bins.
+        win_size: The window size.
+        hop_size: The hop size.
+        fmin: The minimum frequency.
+        fmax: The maximum frequency.
     """
 
-    __constants__ = [
-        "sampling_rate",
-        "num_mels",
-        "n_fft",
-        "win_size",
-        "hop_size",
-        "fmin",
-        "fmax",
-        "max_wav_value",
-    ]
+    __constants__ = ["sampling_rate", "num_mels", "n_fft", "win_size", "hop_size", "fmin", "fmax"]
 
     def __init__(
         self,
@@ -302,7 +302,6 @@ class AudioToHifiGanMels(nn.Module):
         hop_size: int = 256,
         fmin: int = 0,
         fmax: int = 8000,
-        max_wav_value: int = 32768.0,
     ) -> None:
         super().__init__()
 
@@ -313,7 +312,6 @@ class AudioToHifiGanMels(nn.Module):
         self.hop_size = hop_size
         self.fmin = fmin
         self.fmax = fmax
-        self.max_wav_value = max_wav_value
 
         # try:
         #     from librosa.filters import mel as librosa_mel_fn  # type: ignore[import]
