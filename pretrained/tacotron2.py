@@ -961,7 +961,7 @@ class STFT(nn.Module):
 
         self.num_samples = num_samples
 
-        # similar to librosa, reflect-pad the input
+        # Similar to librosa, reflect-pad the input
         input_data = input_data.view(num_batches, 1, num_samples)
         input_data = F.pad(
             input_data.unsqueeze(1),
@@ -989,7 +989,10 @@ class STFT(nn.Module):
         recombine_magnitude_phase = torch.cat([magnitude * torch.cos(phase), magnitude * torch.sin(phase)], dim=1)
 
         inverse_transform = F.conv_transpose1d(
-            recombine_magnitude_phase, self.inverse_basis, stride=self.hop_length, padding=0
+            recombine_magnitude_phase,
+            self.inverse_basis,
+            stride=self.hop_length,
+            padding=0,
         )
 
         if self.window is not None:

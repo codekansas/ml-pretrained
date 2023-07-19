@@ -10,17 +10,24 @@ synthesize audio.
     vocoder = pretrained_vocoder("hifigan")
 """
 
+import argparse
+import logging
 from dataclasses import dataclass
 from typing import TypeVar, cast
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+import torchaudio
 from ml.core.config import conf_field
 from ml.models.lora import SupportedModule as LoraModule, maybe_lora
 from ml.utils.checkpoint import ensure_downloaded
+from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
 from torch.nn.utils import remove_weight_norm, weight_norm
+
+logger = logging.getLogger(__name__)
 
 HIFIGAN_CKPT_URL = "https://huggingface.co/jaketae/hifigan-lj-v1/resolve/main/pytorch_model.bin"
 
@@ -267,3 +274,167 @@ def pretrained_hifigan(
         model.load_state_dict(ckpt)
 
     return model
+
+
+class AudioToHifiGanMels(nn.Module):
+    """Defines a module to convert from a waveform to the mels used by HiFi-GAN.
+
+    The default parameters should be kept the same for pre-trained models.
+    """
+
+    __constants__ = [
+        "sampling_rate",
+        "num_mels",
+        "n_fft",
+        "win_size",
+        "hop_size",
+        "fmin",
+        "fmax",
+        "max_wav_value",
+    ]
+
+    def __init__(
+        self,
+        sampling_rate: int = 22050,
+        num_mels: int = 80,
+        n_fft: int = 1024,
+        win_size: int = 1024,
+        hop_size: int = 256,
+        fmin: int = 0,
+        fmax: int = 8000,
+        max_wav_value: int = 32768.0,
+    ) -> None:
+        super().__init__()
+
+        self.sampling_rate = sampling_rate
+        self.num_mels = num_mels
+        self.n_fft = n_fft
+        self.win_size = win_size
+        self.hop_size = hop_size
+        self.fmin = fmin
+        self.fmax = fmax
+        self.max_wav_value = max_wav_value
+
+        # try:
+        #     from librosa.filters import mel as librosa_mel_fn  # type: ignore[import]
+        # except ImportError:
+        #     raise ImportError("Please install librosa to use AudioToHifiGanMels")
+
+        # mel_librosa = librosa_mel_fn(
+        #     sr=sampling_rate,
+        #     n_fft=n_fft,
+        #     n_mels=num_mels,
+        #     fmin=fmin,
+        #     fmax=fmax,
+        # )
+        # mel = torch.from_numpy(mel_librosa).float().T
+
+        mel = torchaudio.functional.melscale_fbanks(
+            n_freqs=n_fft // 2 + 1,
+            f_min=fmin,
+            f_max=fmax,
+            n_mels=num_mels,
+            sample_rate=sampling_rate,
+            norm="slaney",
+            mel_scale="slaney",
+        )
+
+        self.register_buffer("mel_basis", mel)
+        self.register_buffer("hann_window", torch.hann_window(win_size))
+
+    def _dynamic_range_compression(self, x: np.ndarray, c: float = 1.0, clip_val: float = 1e-5) -> np.ndarray:
+        return np.log(np.clip(x, a_min=clip_val, a_max=None) * c)
+
+    def _dynamic_range_decompression(self, x: np.ndarray, c: float = 1.0) -> np.ndarray:
+        return np.exp(x) / c
+
+    def _dynamic_range_compression_torch(self, x: Tensor, c: float = 1.0, clip_val: float = 1e-5) -> Tensor:
+        return torch.log(torch.clamp(x, min=clip_val) * c)
+
+    def _dynamic_range_decompression_torch(self, x: Tensor, c: float = 1.0) -> Tensor:
+        return torch.exp(x) / c
+
+    def _spectral_normalize_torch(self, magnitudes: Tensor) -> Tensor:
+        output = self._dynamic_range_compression_torch(magnitudes)
+        return output
+
+    def _spectral_de_normalize_torch(self, magnitudes: Tensor) -> Tensor:
+        output = self._dynamic_range_decompression_torch(magnitudes)
+        return output
+
+    mel_basis: Tensor
+    hann_window: Tensor
+
+    def wav_to_mels(
+        self,
+        y: Tensor,
+        center: bool = False,
+    ) -> Tensor:
+        ymin, ymax = torch.min(y), torch.max(y)
+        if ymin < -1.0:
+            logger.warning("min value is %.2g", ymin)
+        if ymax > 1.0:
+            logger.warning("max value is %.2g", ymax)
+
+        pad = int((self.n_fft - self.hop_size) / 2)
+        y = torch.nn.functional.pad(y.unsqueeze(1), (pad, pad), mode="reflect")
+        y = y.squeeze(1)
+
+        spec = torch.stft(
+            y,
+            self.n_fft,
+            hop_length=self.hop_size,
+            win_length=self.win_size,
+            window=self.hann_window,
+            center=center,
+            pad_mode="reflect",
+            normalized=False,
+            onesided=True,
+            return_complex=True,
+        )
+
+        spec = torch.sqrt(spec.real.pow(2) + spec.imag.pow(2) + 1e-9)
+        spec = torch.einsum("bct,cm->bmt", spec, self.mel_basis)
+        spec = self._spectral_normalize_torch(spec)
+
+        return spec
+
+
+def test_mel_to_audio_adhoc() -> None:
+    configure_logging()
+
+    parser = argparse.ArgumentParser(description="Runs adhoc test of mel to audio conversion")
+    parser.add_argument("input_file", type=str, help="Path to input audio file")
+    parser.add_argument("output_file", type=str, help="Path to output audio file")
+    args = parser.parse_args()
+
+    # Loads the audio file.
+    audio, sr = torchaudio.load(args.input_file)
+    audio = audio[:1]
+    audio = audio[:, : sr * 10]
+    if sr != 22050:
+        audio = torchaudio.functional.resample(audio, sr, 22050)
+
+    # Note: This normalizes the audio to the range [-1, 1], which may increase
+    # the volume of the audio if it is quiet.
+    audio = audio / audio.abs().max() * 0.999
+
+    # Loads the HiFi-GAN model.
+    model = pretrained_hifigan(pretrained=True)
+
+    # Converts the audio to mels.
+    audio_to_mels = AudioToHifiGanMels()
+    mels = audio_to_mels.wav_to_mels(audio)
+
+    # Converts the mels back to audio.
+    audio = model(mels).squeeze(0)
+
+    # Saves the audio.
+    torchaudio.save(args.output_file, audio, 22050)
+
+    logger.info("Saved %s", args.output_file)
+
+
+if __name__ == "__main__":
+    # python -m pretrained.vocoder.hifigan
+    test_mel_to_audio_adhoc()
