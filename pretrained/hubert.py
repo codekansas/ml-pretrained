@@ -432,7 +432,7 @@ class Hubert(nn.Module):
             self.encoder = HubertEncoder(config)
 
     def set_output_layer(self, output_layer: int | float) -> None:
-        output_layer = normalize_output_layer(output_layer, len(self.layers))
+        output_layer = normalize_output_layer(output_layer, len(self.encoder.layers))
         del self.encoder.layers[output_layer:]
 
     def forward(
@@ -496,7 +496,7 @@ class HubertPredictor:
     def predict(
         self,
         waveform: np.ndarray | Tensor,
-        output_layer: int | float | None,
+        output_layer: int | float | None = None,
         causal: bool = False,
     ) -> Tensor:
         """Gets the hidden states for the given waveform.
