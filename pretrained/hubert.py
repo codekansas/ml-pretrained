@@ -600,7 +600,7 @@ class HubertPredictor:
             for waveform_chunk in read_audio(
                 path,
                 chunk_length=chunk_length,
-                sampling_rate=self.sample_rate,
+                sample_rate=self.sample_rate,
                 reader=reader,
             ):
                 waveform_tensor = torch.from_numpy(waveform_chunk).to(torch.float32)
