@@ -88,7 +88,7 @@ PRETRAINED_MODELS: dict[PretrainedClipSize, str] = {
     "ViT_B_32": f"{URL_PREFIX}/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt",
     "ViT_B_16": f"{URL_PREFIX}/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt",
     "ViT_L_14": f"{URL_PREFIX}/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt",
-    "ViT_L_14_336px": f"{URL_PREFIX}/3035c92b350959924f9f00213499208652fc7ea050643e8b385c2dac08641f02/ViT-L-14-336px.pt",  # noqa, pylint: disable=line-too-long
+    "ViT_L_14_336px": f"{URL_PREFIX}/3035c92b350959924f9f00213499208652fc7ea050643e8b385c2dac08641f02/ViT-L-14-336px.pt",  # noqa: E501
 }
 
 CLIP_VOCABULARY = "https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz"

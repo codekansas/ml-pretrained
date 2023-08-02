@@ -121,7 +121,7 @@ def reshape_for_broadcast(freqs_cis: Tensor, x: Tensor) -> Tensor:
     ndim = x.ndim
     assert 1 < ndim
     assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    shape = [d if i in (1, ndim - 1) else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(*shape)
 
 
