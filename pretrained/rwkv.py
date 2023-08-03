@@ -46,6 +46,7 @@ import os
 import time
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Sequence, cast, get_args
 
 import torch
@@ -1053,7 +1054,11 @@ def test_rwkv_adhoc() -> None:
             print(f"Time taken: {num_tokens} / {time_delta:.2f}s = {num_tokens / time_delta:.2f} tokens per second")
 
     if args.prompt:
-        generate_for_prompt(args.prompt)
+        if Path(args.prompt).exists():
+            with open(args.prompt, "r") as f:
+                generate_for_prompt(f.read().strip())
+        else:
+            generate_for_prompt(args.prompt)
 
     else:
         prompt = input("Prompt: ")
