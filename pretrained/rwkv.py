@@ -623,7 +623,7 @@ class Attention(nn.Module):
         sr = torch.sigmoid(r)
 
         w, u = self.time_decay, self.time_first
-        w = -torch.exp(w)
+        w = torch.exp(w)
         wkv_fn = self.wkv_fn_cuda if x.is_cuda else self.wkv_fn
         wkv, next_state = wkv_fn(w, u, k, v, last_state)
         rwkv = wkv * sr
