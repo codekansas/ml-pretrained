@@ -14,6 +14,19 @@
     # Gets HuBERT embeddings for a long waveform, in batches.
     predictor.predict_in_chunks(torch.randn(1, 160_000), 16_000, output_layer=None)
 
+In order to get HuBERT clusters, you can use:
+
+.. highlight:: python
+.. code-block:: python
+
+    from pretrained.hubert import pretrained_hubert_with_kmeans
+
+    model, kmeans = pretrained_hubert_with_kmeans("base-l7-c100")
+    predictor = model.predictor(kmeans)
+
+    # Get the HuBERT tokens for a waveform.
+    predictor.predict(torch.randn(1, 16_000))
+
 The choices for the model key are:
 
 - ``"base"`` - 12 layers, 768 hidden size, 12 attention heads.
