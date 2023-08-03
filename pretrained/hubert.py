@@ -835,17 +835,29 @@ def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hub
 
     match size:
         case "base-l7-c100":
-            return pretrained_hubert("base"), kmeans
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(7)
+            return hubert, kmeans
         case "base-l7-c200":
-            return pretrained_hubert("base"), kmeans
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(7)
+            return hubert, kmeans
         case "base-l7-c500":
-            return pretrained_hubert("base"), kmeans
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(7)
+            return hubert, kmeans
         case "large-l22-c100":
-            return pretrained_hubert("large"), kmeans
+            hubert = pretrained_hubert("large")
+            hubert.set_output_layer(22)
+            return hubert, kmeans
         case "large-l22-c200":
-            return pretrained_hubert("large"), kmeans
+            hubert = pretrained_hubert("large")
+            hubert.set_output_layer(22)
+            return hubert, kmeans
         case "large-l22-c500":
-            return pretrained_hubert("large"), kmeans
+            hubert = pretrained_hubert("large")
+            hubert.set_output_layer(22)
+            return hubert, kmeans
         case _:
             raise NotImplementedError(f"Invalid size: {size}")
 
