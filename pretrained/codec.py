@@ -318,7 +318,7 @@ def pretrained_codec(key: PretrainedCodecType, load_weights: bool = True, max_ts
             return _load_pretrained_codec(
                 key,
                 ckpt_url="https://github.com/codekansas/ml-pretrained/releases/download/v0.0.1/codec_librivox.bin",
-                sha256="fa0ef811b764d48f8740071e0e9e8a80a5337965af749ee21d2899a7e318f4a7",
+                sha256="51cb5745591d116c822877469c6f6f398d74e1e2cd23e879b2b6ccc786dcb069",
                 load_weights=load_weights,
                 config=MelCodecConfig(
                     num_mels=80,
