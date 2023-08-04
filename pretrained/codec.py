@@ -287,7 +287,7 @@ def _load_pretrained_codec(
     sha256: str,
     load_weights: bool,
     config: MelCodecConfig,
-) -> None:
+) -> MelCodec:
     model = MelCodec(
         num_mels=config.num_mels,
         d_model=config.d_model,
