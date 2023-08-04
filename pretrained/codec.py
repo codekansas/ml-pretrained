@@ -18,7 +18,7 @@
 import argparse
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast, get_args
 
 import safetensors.torch
 import torch
@@ -35,6 +35,12 @@ from pretrained.vocoder.hifigan import AudioToHifiGanMels, pretrained_hifigan
 logger = logging.getLogger(__name__)
 
 PretrainedCodecType = Literal["librivox"]
+
+
+def cast_pretrained_codec_type(s: str) -> PretrainedCodecType:
+    if s not in get_args(PretrainedCodecType):
+        raise KeyError(f"Invalid Codec type: {s} Expected one of: {get_args(PretrainedCodecType)}")
+    return cast(PretrainedCodecType, s)
 
 
 @dataclass
