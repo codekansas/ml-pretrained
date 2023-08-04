@@ -824,19 +824,19 @@ def pretrained_kmeans_clusters(size: PretrainedHubertKmeansSize) -> KMeans:
         case "large-l22-c100":
             return _load_pretrained_hubert_kmeans(
                 size,
-                url=f"{url_base}/kmeans_large_sklearn_100.npy",
+                url=f"{url_base}/kmeans_large_22_sklearn_100.npy",
                 sha256="23a1ae525bbf5826c224d372919a2bb13760bc53d8bb2d720ef84c1ac0aa0928",
             )
         case "large-l22-c200":
             return _load_pretrained_hubert_kmeans(
                 size,
-                url=f"{url_base}/kmeans_large_sklearn_100.npy",
+                url=f"{url_base}/kmeans_large_22_sklearn_200.npy",
                 sha256="02960e5e8e2c5f274329ff4ee10f3e1cd5c046a7a4343db89e7408fcdfb12df7",
             )
         case "large-l22-c500":
             return _load_pretrained_hubert_kmeans(
                 size,
-                url=f"{url_base}/kmeans_large_sklearn_100.npy",
+                url=f"{url_base}/kmeans_large_22_sklearn_500.npy",
                 sha256="b904d5e08ade8411f5199f983fe2084eea2eed52baa0081e8fc2839c72a14319",
             )
         case _:
