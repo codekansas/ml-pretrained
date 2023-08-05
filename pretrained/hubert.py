@@ -798,9 +798,7 @@ def pretrained_hubert(size: PretrainedHubertSize, load_weights: bool = True) -> 
 
 
 def pretrained_kmeans_clusters(size: PretrainedHubertKmeansSize) -> KMeans:
-    # This release can be viewed here:
-    # https://github.com/codekansas/ml-pretrained/releases/v0.0.1
-    url_base = "https://github.com/codekansas/ml-pretrained/releases/download/v0.0.1/"
+    url_base = "https://huggingface.co/codekansas/hubert-quantization/resolve/main/"
 
     match size:
         case "base-l7-c100":
