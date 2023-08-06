@@ -63,9 +63,11 @@ PretrainedHubertKmeansSize = Literal[
     "base-l7-c100",
     "base-l7-c200",
     "base-l7-c500",
-    "large-l22-c100",
-    "large-l22-c200",
-    "large-l22-c500",
+    "base-l7-c1000",
+    "base-l8-c100",
+    "base-l8-c200",
+    "base-l8-c500",
+    "base-l8-c1000",
 ]
 
 
@@ -464,10 +466,14 @@ class Hubert(nn.Module):
 
     def forward(
         self,
-        input_values: Tensor | None,
+        input_values: Tensor,
+        sample_rate: int,
         causal: bool = False,
         output_layer: int | float | None = None,
     ) -> Tensor:
+        if sample_rate != 16_000:
+            raise RuntimeError("HuBERT only supports 16 kHz as input sampling rate")
+
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(1, 2)
         hidden_states = self.feature_projection(extract_features)
@@ -523,6 +529,7 @@ class HubertPredictor:
     def predict(
         self,
         waveform: np.ndarray | Tensor,
+        sample_rate: int,
         output_layer: int | float | None = None,
         causal: bool = False,
     ) -> Tensor:
@@ -530,6 +537,9 @@ class HubertPredictor:
 
         Args:
             waveform: The waveform to get hidden states for, with shape (B, T)
+            sample_rate: The waveform's sampling rate; this is only used to
+                verify that it is 16 kHz, since it is easy for downstream
+                applications to forget.
             output_layer: The layer to get hidden states from. If `None`, will
                 return the hidden states from the last layer. If an `int`, will
                 return the hidden states from that layer. If a `float`, will
@@ -542,7 +552,7 @@ class HubertPredictor:
             The hidden states for the given waveform, with shape (B, T, D)
         """
         waveform = self.device.tensor_to(waveform)
-        features = self.model.forward(waveform, causal=causal, output_layer=output_layer)
+        features = self.model.forward(waveform, sample_rate, causal=causal, output_layer=output_layer)
         if self.kmeans is not None:
             features = self.kmeans.forward(features)
         return features
@@ -550,6 +560,7 @@ class HubertPredictor:
     def predict_in_chunks(
         self,
         waveform: Tensor | np.ndarray,
+        sample_rate: int,
         chunk_size: int = 16_000 * 10,
         output_layer: int | float | None = None,
         causal: bool = False,
@@ -562,6 +573,9 @@ class HubertPredictor:
 
         Args:
             waveform: The waveform to get hidden states for, with shape (B, T)
+            sample_rate: The waveform's sampling rate; this is only used to
+                verify that it is 16 kHz, since it is easy for downstream
+                applications to forget.
             chunk_size: The size of each chunk to process, in frames.
             output_layer: The layer to get hidden states from. If `None`, will
                 return the hidden states from the last layer. If an `int`, will
@@ -583,7 +597,7 @@ class HubertPredictor:
             feat = []
             for start in range(0, x.size(1), chunk_size):
                 x_chunk = x[:, start : start + chunk_size]
-                feat_chunk = self.model.forward(x_chunk, causal=causal, output_layer=output_layer)
+                feat_chunk = self.model.forward(x_chunk, sample_rate, causal=causal, output_layer=output_layer)
                 if self.kmeans is not None:
                     feat_chunk = self.kmeans.forward(feat_chunk)
                 feat.append(feat_chunk.cpu())
@@ -603,6 +617,9 @@ class HubertPredictor:
 
         Args:
             path: The path to the audio file to process.
+            sample_rate: The waveform's sampling rate; this is only used to
+                verify that it is 16 kHz, since it is easy for downstream
+                applications to forget.
             chunk_length_sec: The length of each chunk to process, in seconds.
             output_layer: The layer to get hidden states from. If `None`, will
                 return the hidden states from the last layer. If an `int`, will
@@ -639,7 +656,7 @@ class HubertPredictor:
                 if self.model.pre_normalize:
                     x = F.layer_norm(x, x.shape)
 
-                feat_chunk = self.model.forward(x, causal=causal, output_layer=output_layer)
+                feat_chunk = self.model.forward(x, self.sample_rate, causal=causal, output_layer=output_layer)
                 if self.kmeans is not None:
                     feat_chunk = self.kmeans.forward(feat_chunk)
                 feat.append(feat_chunk.cpu())
@@ -798,44 +815,56 @@ def pretrained_hubert(size: PretrainedHubertSize, load_weights: bool = True) -> 
 
 
 def pretrained_kmeans_clusters(size: PretrainedHubertKmeansSize) -> KMeans:
-    url_base = "https://huggingface.co/codekansas/hubert-quantization/resolve/main/"
+    url_base = "https://huggingface.co/codekansas/hubert-quantization/resolve/main"
 
     match size:
         case "base-l7-c100":
             return _load_pretrained_hubert_kmeans(
                 size,
                 url=f"{url_base}/kmeans_base_7_sklearn_100.npy",
-                sha256="d7ad3c6916ba6c66223b304abdb69bf778cfbcdd4f3e52b9d66cd61463fe097d",
+                sha256="e46d1e2a5d6f83805dd336cf22a4228a902e78c3377141b4aa8e8c946af160cb",
             )
         case "base-l7-c200":
             return _load_pretrained_hubert_kmeans(
                 size,
                 url=f"{url_base}/kmeans_base_7_sklearn_200.npy",
-                sha256="7198238978bc0c95b5e7af2932898f446b10f0ece1547d845b5b00725d7732f2",
+                sha256="5bce95ff25b8e3e07170f73bfcf7a5c72a432a9acd3382e833409a30a41ce062",
             )
         case "base-l7-c500":
             return _load_pretrained_hubert_kmeans(
                 size,
                 url=f"{url_base}/kmeans_base_7_sklearn_500.npy",
-                sha256="6d667bbbe90fdb0dda0a5c6f0cc89a6828a48c074b108c0f7024974c0abf62d6",
+                sha256="ce9855b89955affbf8e939ff274a4938efee730d4fb4fab990070747744b9df0",
             )
-        case "large-l22-c100":
+        case "base-l7-c1000":
             return _load_pretrained_hubert_kmeans(
                 size,
-                url=f"{url_base}/kmeans_large_22_sklearn_100.npy",
-                sha256="23a1ae525bbf5826c224d372919a2bb13760bc53d8bb2d720ef84c1ac0aa0928",
+                url=f"{url_base}/kmeans_base_7_sklearn_1000.npy",
+                sha256="6a10e5978bac1b84a3b0e03bb72e3015d0cdf6956e301a48971eb3a2493e37c5",
             )
-        case "large-l22-c200":
+        case "base-l8-c100":
             return _load_pretrained_hubert_kmeans(
                 size,
-                url=f"{url_base}/kmeans_large_22_sklearn_200.npy",
-                sha256="02960e5e8e2c5f274329ff4ee10f3e1cd5c046a7a4343db89e7408fcdfb12df7",
+                url=f"{url_base}/kmeans_base_8_sklearn_100.npy",
+                sha256="3219a01b5ec21ca173605fe5b2d7b296db1a10ef24e5c593c8076b1b39f96865",
             )
-        case "large-l22-c500":
+        case "base-l8-c200":
             return _load_pretrained_hubert_kmeans(
                 size,
-                url=f"{url_base}/kmeans_large_22_sklearn_500.npy",
-                sha256="b904d5e08ade8411f5199f983fe2084eea2eed52baa0081e8fc2839c72a14319",
+                url=f"{url_base}/kmeans_base_8_sklearn_200.npy",
+                sha256="0beab85b59604841da10b3327bedc710e0dbf8e4a2b24bc0d964bf345640e9d7",
+            )
+        case "base-l8-c500":
+            return _load_pretrained_hubert_kmeans(
+                size,
+                url=f"{url_base}/kmeans_base_8_sklearn_500.npy",
+                sha256="4a06731ef6d8aa116ae05ec309ad1ae47b7c030f05bc62137899b17d32fd294a",
+            )
+        case "base-l8-c1000":
+            return _load_pretrained_hubert_kmeans(
+                size,
+                url=f"{url_base}/kmeans_base_8_sklearn_1000.npy",
+                sha256="15be942383cf9e5afc3d6f0d615ab6dc8459364129dc1a02ee00f8c927783aae",
             )
         case _:
             raise NotImplementedError(f"Invalid size: {size}")
@@ -857,17 +886,25 @@ def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hub
             hubert = pretrained_hubert("base")
             hubert.set_output_layer(7)
             return hubert, kmeans
-        case "large-l22-c100":
-            hubert = pretrained_hubert("large")
-            hubert.set_output_layer(22)
+        case "base-l7-c1000":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(7)
             return hubert, kmeans
-        case "large-l22-c200":
-            hubert = pretrained_hubert("large")
-            hubert.set_output_layer(22)
+        case "base-l8-c100":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(8)
             return hubert, kmeans
-        case "large-l22-c500":
-            hubert = pretrained_hubert("large")
-            hubert.set_output_layer(22)
+        case "base-l8-c200":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(8)
+            return hubert, kmeans
+        case "base-l8-c500":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(8)
+            return hubert, kmeans
+        case "base-l8-c1000":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(8)
             return hubert, kmeans
         case _:
             raise NotImplementedError(f"Invalid size: {size}")
@@ -875,7 +912,7 @@ def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hub
 
 def test_hubert_adhoc() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("size", type=str, choices=get_args(PretrainedHubertSize))
+    parser.add_argument("size", type=str, choices=get_args(PretrainedHubertSize) + get_args(PretrainedHubertKmeansSize))
     parser.add_argument("-t", "--tsz", type=int, default=22400)
     parser.add_argument("-n", "--no-load-weights", default=False, action="store_true")
     parser.add_argument("-c", "--causal", default=False, action="store_true")
@@ -884,11 +921,16 @@ def test_hubert_adhoc() -> None:
     configure_logging()
 
     # Loads the model and moves to the right device.
-    model = pretrained_hubert(size=cast(PretrainedHubertSize, args.size), load_weights=not args.no_load_weights)
-    predictor = model.predictor()
+    kmeans: KMeans | None
+    if args.size in get_args(PretrainedHubertSize):
+        model = pretrained_hubert(size=cast(PretrainedHubertSize, args.size), load_weights=not args.no_load_weights)
+        kmeans = None
+    else:
+        model, kmeans = pretrained_hubert_with_kmeans(size=cast(PretrainedHubertKmeansSize, args.size))
+    predictor = model.predictor(kmeans)
 
     # Test the model on a random waveform.
-    y = predictor.predict(torch.randn(1, args.tsz), causal=args.causal)
+    y = predictor.predict(torch.randn(1, args.tsz), sample_rate=16000, causal=args.causal)
     assert (args.tsz // 320) == y.shape[1] + 1
 
 
