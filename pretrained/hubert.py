@@ -276,6 +276,25 @@ class HubertEncoder(nn.Module):
                 break
         return hidden_states
 
+    def extract_all_features(
+        self,
+        hidden_states: Tensor,
+        causal: bool = False,
+        output_layer: int | float | None = None,
+    ) -> list[Tensor]:
+        position_embeddings = self.pos_conv_embed.forward(hidden_states)
+        hidden_states = hidden_states + position_embeddings
+        hidden_states = self.layer_norm(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        output_layer = normalize_output_layer(output_layer, len(self.layers))
+        all_layer_hidden_states = []
+        for i, layer in enumerate(self.layers):
+            hidden_states = layer.forward(hidden_states, causal=causal)
+            all_layer_hidden_states.append(hidden_states)
+            if output_layer is not None and i == output_layer:
+                break
+        return all_layer_hidden_states
+
     def remove_weight_norm_(self) -> None:
         self.pos_conv_embed.remove_weight_norm_()
 
@@ -444,6 +463,24 @@ class HubertEncoderStableLayerNorm(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         return hidden_states
 
+    def extract_all_features(
+        self,
+        hidden_states: Tensor,
+        causal: bool = False,
+        output_layer: int | float | None = None,
+    ) -> list[Tensor]:
+        position_embeddings = self.pos_conv_embed(hidden_states)
+        hidden_states = hidden_states + position_embeddings
+        hidden_states = self.dropout(hidden_states)
+        output_layer = normalize_output_layer(output_layer, len(self.layers))
+        all_layers_hidden_states = []
+        for i, layer in enumerate(self.layers):
+            hidden_states = layer.forward(hidden_states, causal=causal)
+            all_layers_hidden_states.append(hidden_states)
+            if output_layer is not None and i == output_layer:
+                break
+        return all_layers_hidden_states
+
     def remove_weight_norm_(self) -> None:
         self.pos_conv_embed.remove_weight_norm_()
 
@@ -484,8 +521,22 @@ class Hubert(nn.Module):
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(1, 2)
         hidden_states = self.feature_projection(extract_features)
-        hidden_states = self.encoder.forward(hidden_states, causal=causal, output_layer=output_layer)
-        return hidden_states
+        return self.encoder.forward(hidden_states, causal=causal, output_layer=output_layer)
+
+    def extract_all_features(
+        self,
+        input_values: Tensor,
+        sample_rate: int,
+        causal: bool = False,
+        output_layer: int | float | None = None,
+    ) -> list[Tensor]:
+        if sample_rate != 16_000:
+            raise RuntimeError("HuBERT only supports 16 kHz as input sampling rate")
+
+        extract_features = self.feature_extractor(input_values)
+        extract_features = extract_features.transpose(1, 2)
+        hidden_states = self.feature_projection(extract_features)
+        return self.encoder.extract_all_features(hidden_states, causal=causal, output_layer=output_layer)
 
     def predictor(
         self,
@@ -936,7 +987,8 @@ def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hub
 
 def test_hubert_adhoc() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("size", type=str, choices=get_args(PretrainedHubertSize) + get_args(PretrainedHubertKmeansSize))
+    size_choices = get_args(PretrainedHubertSize) + get_args(PretrainedHubertKmeansSize)
+    parser.add_argument("size", type=str, choices=size_choices)
     parser.add_argument("-t", "--tsz", type=int, default=22400)
     parser.add_argument("-n", "--no-load-weights", default=False, action="store_true")
     parser.add_argument("-c", "--causal", default=False, action="store_true")
