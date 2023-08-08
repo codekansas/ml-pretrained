@@ -535,7 +535,6 @@ class Encodec(nn.Module):
     """EnCodec model operating on the raw waveform.
 
     Parameters:
-        target_bandwidths: Target bandwidths.
         encoder: Encoder network.
         decoder: Decoder network.
         sample_rate: Audio sample rate.
@@ -547,7 +546,6 @@ class Encodec(nn.Module):
         encoder: SEANetEncoder,
         decoder: SEANetDecoder,
         quantizer: ResidualVectorQuantization,
-        target_bandwidths: Sequence[float],
         sample_rate: int,
         channels: int,
         overlap: float = 0.01,
@@ -555,7 +553,6 @@ class Encodec(nn.Module):
         super().__init__()
 
         self.bandwidth: float | None = None
-        self.target_bandwidths = target_bandwidths
         self.encoder = encoder
         self.quantizer = quantizer
         self.decoder = decoder
@@ -618,7 +615,7 @@ class Decoder(nn.Module):
 
 @dataclass
 class EncodecConfig:
-    target_bandwidths: Sequence[float]
+    num_quantizers: int
     sample_rate: int
     channels: int
     causal: bool
@@ -634,16 +631,14 @@ def _load_pretrained_encodec(
 ) -> Encodec:
     encoder = SEANetEncoder(channels=config.channels, norm=config.norm, causal=config.causal)
     decoder = SEANetDecoder(channels=config.channels, norm=config.norm, causal=config.causal)
-    n_q = int(1000 * config.target_bandwidths[-1] // (math.ceil(config.sample_rate / encoder.hop_length) * 10))
     quantizer = ResidualVectorQuantization(
         VectorQuantization(dim=encoder.dimension, codebook_size=1024),
-        num_quantizers=n_q,
+        num_quantizers=num_quantizers,
     )
     model = Encodec(
         encoder=encoder,
         decoder=decoder,
         quantizer=quantizer,
-        target_bandwidths=config.target_bandwidths,
         sample_rate=config.sample_rate,
         channels=config.channels,
     )
@@ -676,7 +671,7 @@ def pretrained_encodec(size: PretrainedEncodecSize, load_weights: bool = True) -
                 ckpt_url="https://dl.fbaipublicfiles.com/encodec/v0/encodec_24khz-d7cc33bc.th",
                 sha256="d7cc33bcf1aad7f2dad9836f36431530744abeace3ca033005e3290ed4fa47bf",
                 config=EncodecConfig(
-                    target_bandwidths=[1.5, 3.0, 6, 12.0, 24.0],
+                    num_quantizers=32,
                     sample_rate=24000,
                     channels=1,
                     causal=True,
