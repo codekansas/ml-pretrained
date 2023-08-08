@@ -87,7 +87,6 @@ def cast_pretrained_hubert_kmeans_size(s: str) -> PretrainedHubertKmeansSize:
 
 @dataclass
 class HubertConfig:
-    vocab_size: int
     hidden_size: int
     num_hidden_layers: int
     num_attention_heads: int
@@ -727,7 +726,6 @@ def pretrained_hubert(size: PretrainedHubertSize, load_weights: bool = True) -> 
                 ckpt_url="https://huggingface.co/facebook/hubert-base-ls960/resolve/main/pytorch_model.bin",
                 sha256="062249fffb353eab67547a2fbc129f7c31a2f459faf641b19e8fb007cc5c48ad",
                 config=HubertConfig(
-                    vocab_size=32,
                     hidden_size=768,
                     num_hidden_layers=12,
                     num_attention_heads=12,
@@ -760,7 +758,6 @@ def pretrained_hubert(size: PretrainedHubertSize, load_weights: bool = True) -> 
                 sha256="9cf43abec3f0410ad6854afa4d376c69ccb364b48ddddfd25c4c5aa16398eab0",
                 remove_prefix="hubert.",
                 config=HubertConfig(
-                    vocab_size=32,
                     hidden_size=1024,
                     num_hidden_layers=24,
                     num_attention_heads=16,
@@ -792,7 +789,6 @@ def pretrained_hubert(size: PretrainedHubertSize, load_weights: bool = True) -> 
                 ckpt_url="https://huggingface.co/facebook/hubert-xlarge-ll60k/resolve/main/pytorch_model.bin",
                 sha256="6131dc27f4508595daa1a13fec4aa1f6b4a579b5d93550bae26c13a83221f8a7",
                 config=HubertConfig(
-                    vocab_size=32,
                     hidden_size=1280,
                     num_hidden_layers=48,
                     num_attention_heads=16,
