@@ -357,7 +357,6 @@ class SEANetEncoder(nn.Module):
 
         # Downsample to raw audio scale
         for _, ratio in enumerate(self.ratios):
-
             # Add residual layers
             for j in range(n_residual_layers):
                 model += [
@@ -457,7 +456,6 @@ class SEANetDecoder(nn.Module):
 
         # Upsample to raw audio scale.
         for _, ratio in enumerate(self.ratios):
-
             # Add upsampling layers.
             model += [
                 get_activation(activation),
