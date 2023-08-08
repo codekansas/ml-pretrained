@@ -258,7 +258,8 @@ class SLSTM(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         x = x.permute(2, 0, 1)
-        y, _ = self.lstm(x)
+        y, _ = self.lstm(x.float())
+        y = y.to(x)
         if self.skip:
             y = y + x
         y = y.permute(1, 2, 0)
