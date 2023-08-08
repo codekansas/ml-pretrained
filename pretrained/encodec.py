@@ -633,7 +633,7 @@ def _load_pretrained_encodec(
     decoder = SEANetDecoder(channels=config.channels, norm=config.norm, causal=config.causal)
     quantizer = ResidualVectorQuantization(
         VectorQuantization(dim=encoder.dimension, codebook_size=1024),
-        num_quantizers=num_quantizers,
+        num_quantizers=config.num_quantizers,
     )
     model = Encodec(
         encoder=encoder,
