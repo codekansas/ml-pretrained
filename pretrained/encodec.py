@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 PretrainedEncodecSize = Literal["24khz"]
 
-PadMode = Literal["zero", "reflect", "replicate", "circular", "constant"]
+PadMode = Literal["reflect", "replicate", "circular", "constant"]
 
 
 def get_extra_padding_for_conv1d(
@@ -56,7 +56,7 @@ def get_extra_padding_for_conv1d(
     return ideal_length - length
 
 
-def pad1d(x: Tensor, paddings: tuple[int, int], mode: PadMode = "zero", value: float = 0.0) -> Tensor:
+def pad1d(x: Tensor, paddings: tuple[int, int], mode: PadMode = "constant", value: float = 0.0) -> Tensor:
     length = x.shape[-1]
     padding_left, padding_right = paddings
     assert padding_left >= 0 and padding_right >= 0, (padding_left, padding_right)
