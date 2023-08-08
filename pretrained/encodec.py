@@ -548,7 +548,6 @@ class Encodec(nn.Module):
         quantizer: ResidualVectorQuantization,
         sample_rate: int,
         channels: int,
-        overlap: float = 0.01,
     ) -> None:
         super().__init__()
 
@@ -558,7 +557,6 @@ class Encodec(nn.Module):
         self.decoder = decoder
         self.sample_rate = sample_rate
         self.channels = channels
-        self.overlap = overlap
         self.frame_rate = math.ceil(self.sample_rate / np.prod(self.encoder.ratios))
 
         quantizer_bins = quantizer.layers[0].codebook_size
