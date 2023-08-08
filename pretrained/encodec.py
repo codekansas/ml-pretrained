@@ -576,9 +576,11 @@ class Encodec(nn.Module):
     def decode(self, tokens: Tensor) -> Tensor:
         return _decode(tokens, decoder=self.decoder, quantizer=self.quantizer)
 
-    def forward(self, x: Tensor) -> Tensor:
-        frames = self.encode(x)
-        return self.decode(frames)[:, :, : x.shape[-1]]
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        x = self.encoder(x)
+        x, _, vq_losses, _ = self.quantizer(x)
+        x = self.decoder(x)
+        return x, vq_losses
 
 
 class Encoder(nn.Module):
