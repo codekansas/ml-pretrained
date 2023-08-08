@@ -537,8 +537,9 @@ class Encodec(nn.Module):
     Parameters:
         encoder: Encoder network.
         decoder: Decoder network.
-        sample_rate: Audio sample rate.
+        quantizer: The residual quantizer module.
         channels: Number of audio channels.
+        sample_rate: The sample rate of the input audio.
     """
 
     def __init__(
@@ -546,8 +547,8 @@ class Encodec(nn.Module):
         encoder: SEANetEncoder,
         decoder: SEANetDecoder,
         quantizer: ResidualVectorQuantization,
-        sample_rate: int,
-        channels: int,
+        channels: int = 1,
+        sample_rate: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -555,9 +556,8 @@ class Encodec(nn.Module):
         self.encoder = encoder
         self.quantizer = quantizer
         self.decoder = decoder
-        self.sample_rate = sample_rate
         self.channels = channels
-        self.frame_rate = math.ceil(self.sample_rate / np.prod(self.encoder.ratios))
+        self.sample_rate = sample_rate
 
         quantizer_bins = quantizer.layers[0].codebook_size
         self.bits_per_codebook = int(math.log2(quantizer_bins))
@@ -587,8 +587,6 @@ class Encoder(nn.Module):
 
         self.encoder = encodec.encoder
         self.quantizer = encodec.quantizer
-        self.sample_rate = encodec.sample_rate
-        self.frame_rate = encodec.frame_rate
 
     def encode(self, waveform: Tensor) -> Tensor:
         return _encode(waveform, encoder=self.encoder, quantizer=self.quantizer)
@@ -614,10 +612,10 @@ class Decoder(nn.Module):
 @dataclass
 class EncodecConfig:
     num_quantizers: int
-    sample_rate: int
     channels: int
     causal: bool
     norm: NormType | ParametrizationNormType
+    sample_rate: int | None = None
 
 
 def _load_pretrained_encodec(
@@ -637,8 +635,8 @@ def _load_pretrained_encodec(
         encoder=encoder,
         decoder=decoder,
         quantizer=quantizer,
-        sample_rate=config.sample_rate,
         channels=config.channels,
+        sample_rate=config.sample_rate,
     )
 
     # Loads the model weights.
@@ -670,10 +668,10 @@ def pretrained_encodec(size: PretrainedEncodecSize, load_weights: bool = True) -
                 sha256="d7cc33bcf1aad7f2dad9836f36431530744abeace3ca033005e3290ed4fa47bf",
                 config=EncodecConfig(
                     num_quantizers=32,
-                    sample_rate=24000,
                     channels=1,
                     causal=True,
                     norm="weight",
+                    sample_rate=24000,
                 ),
                 load_weights=load_weights,
             )
@@ -697,15 +695,16 @@ def test_encodec_adhoc() -> None:
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[None, :, : sr * 10]
-    if sr != model.sample_rate:
+    if model.sample_rate is not None and sr != model.sample_rate:
         audio = torchaudio.functional.resample(audio, sr, model.sample_rate)
+        sr = model.sample_rate
 
     # Runs the codec.
     tokens = encoder.encode(audio)
     reconstructed_audio = decoder.decode(tokens)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, reconstructed_audio[0], model.sample_rate)
+    torchaudio.save(args.output_file, reconstructed_audio[0], sr)
 
     logger.info("Saved %s", args.output_file)
 
