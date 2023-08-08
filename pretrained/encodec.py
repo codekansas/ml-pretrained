@@ -138,7 +138,7 @@ class NormConvTranspose1d(nn.Module):
 
 
 class SConv1d(nn.Module):
-    __constants__ = ["causal", "pad_mode"]
+    __constants__ = ["stride", "dilation", "kernel_size", "padding_total", "causal", "pad_mode"]
 
     def __init__(
         self,
@@ -178,21 +178,22 @@ class SConv1d(nn.Module):
             norm=norm,
             groups=norm_groups,
         )
+
+        self.stride = self.conv.conv.stride[0]
+        self.dilation = self.conv.conv.dilation[0]
+        kernel_size = self.conv.conv.kernel_size[0]
+        self.kernel_size = (kernel_size - 1) * self.dilation + 1
+        self.padding_total = self.kernel_size - self.stride
         self.causal = causal
-        self.pad_mode = pad_mode
+        self.pad_mode = str(pad_mode)
 
     def forward(self, x: Tensor) -> Tensor:
-        kernel_size = self.conv.conv.kernel_size[0]
-        stride = self.conv.conv.stride[0]
-        dilation = self.conv.conv.dilation[0]
-        kernel_size = (kernel_size - 1) * dilation + 1
-        padding_total = kernel_size - stride
-        extra_padding = get_extra_padding_for_conv1d(x, kernel_size, stride, padding_total)
+        extra_padding = get_extra_padding_for_conv1d(x, self.kernel_size, self.stride, self.padding_total)
         if self.causal:
-            x = pad1d(x, (padding_total, extra_padding), mode=self.pad_mode)
+            x = pad1d(x, (self.padding_total, extra_padding), mode=self.pad_mode)
         else:
-            padding_right = padding_total // 2
-            padding_left = padding_total - padding_right
+            padding_right = self.padding_total // 2
+            padding_left = self.padding_total - padding_right
             x = pad1d(x, (padding_left, padding_right + extra_padding), mode=self.pad_mode)
         return self.conv(x)
 
