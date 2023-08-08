@@ -185,7 +185,7 @@ class SConv1d(nn.Module):
         self.kernel_size = (kernel_size - 1) * self.dilation + 1
         self.padding_total = self.kernel_size - self.stride
         self.causal = causal
-        self.pad_mode = str(pad_mode)
+        self.pad_mode = pad_mode
 
     def forward(self, x: Tensor) -> Tensor:
         extra_padding = get_extra_padding_for_conv1d(x, self.kernel_size, self.stride, self.padding_total)
