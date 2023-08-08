@@ -79,6 +79,12 @@ def cast_pretrained_hubert_size(s: str) -> PretrainedHubertSize:
     return cast(PretrainedHubertSize, s)
 
 
+def cast_pretrained_hubert_kmeans_size(s: str) -> PretrainedHubertKmeansSize:
+    if s not in get_args(PretrainedHubertKmeansSize):
+        raise KeyError(f"Invalid HuBERT key: {s} Expected one of: {get_args(PretrainedHubertKmeansSize)}")
+    return cast(PretrainedHubertKmeansSize, s)
+
+
 @dataclass
 class HubertConfig:
     vocab_size: int
