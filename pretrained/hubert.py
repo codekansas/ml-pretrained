@@ -68,6 +68,8 @@ PretrainedHubertKmeansSize = Literal[
     "base-l8-c200",
     "base-l8-c500",
     "base-l8-c1000",
+    "base-l10-c100",
+    "base-l10-c200",
 ]
 
 
@@ -866,6 +868,18 @@ def pretrained_kmeans_clusters(size: PretrainedHubertKmeansSize) -> KMeans:
                 url=f"{url_base}/kmeans_base_8_sklearn_1000.npy",
                 sha256="15be942383cf9e5afc3d6f0d615ab6dc8459364129dc1a02ee00f8c927783aae",
             )
+        case "base-l10-c100":
+            return _load_pretrained_hubert_kmeans(
+                size,
+                url=f"{url_base}/kmeans_base_10_sklearn_100.npy",
+                sha256="22918f566c2308c14e9514830ddc669a26dfbed2668ce27eb8f57801b78d27b7",
+            )
+        case "base-l20-c200":
+            return _load_pretrained_hubert_kmeans(
+                size,
+                url=f"{url_base}/kmeans_base_10_sklearn_200.npy",
+                sha256="92cff38a19df79303a8d18c98fb776cbed299b92944195a3793eda16a7f6da97",
+            )
         case _:
             raise NotImplementedError(f"Invalid size: {size}")
 
@@ -905,6 +919,14 @@ def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hub
         case "base-l8-c1000":
             hubert = pretrained_hubert("base")
             hubert.set_output_layer(8)
+            return hubert, kmeans
+        case "base-l10-c100":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(10)
+            return hubert, kmeans
+        case "base-l10-c200":
+            hubert = pretrained_hubert("base")
+            hubert.set_output_layer(10)
             return hubert, kmeans
         case _:
             raise NotImplementedError(f"Invalid size: {size}")
