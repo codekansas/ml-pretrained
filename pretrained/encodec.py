@@ -56,7 +56,7 @@ def get_extra_padding_for_conv1d(
     return ideal_length - length
 
 
-def pad1d(x: torch.Tensor, paddings: tuple[int, int], mode: PadMode = "zero", value: float = 0.0) -> Tensor:
+def pad1d(x: Tensor, paddings: tuple[int, int], mode: PadMode = "zero", value: float = 0.0) -> Tensor:
     length = x.shape[-1]
     padding_left, padding_right = paddings
     assert padding_left >= 0 and padding_right >= 0, (padding_left, padding_right)
@@ -73,7 +73,7 @@ def pad1d(x: torch.Tensor, paddings: tuple[int, int], mode: PadMode = "zero", va
         return F.pad(x, paddings, mode, value)
 
 
-def unpad1d(x: torch.Tensor, paddings: tuple[int, int]) -> Tensor:
+def unpad1d(x: Tensor, paddings: tuple[int, int]) -> Tensor:
     padding_left, padding_right = paddings
     assert padding_left >= 0 and padding_right >= 0, (padding_left, padding_right)
     assert (padding_left + padding_right) <= x.shape[-1]
@@ -360,7 +360,7 @@ class SEANetEncoder(nn.Module):
         ]
 
         # Downsample to raw audio scale
-        for _, ratio in enumerate(self.ratios):
+        for ratio in self.ratios:
             # Add residual layers
             for j in range(n_residual_layers):
                 model += [
@@ -459,7 +459,7 @@ class SEANetDecoder(nn.Module):
             model += [SLSTM(mult * n_filters, num_layers=lstm)]
 
         # Upsample to raw audio scale.
-        for _, ratio in enumerate(self.ratios):
+        for ratio in self.ratios:
             # Add upsampling layers.
             model += [
                 get_activation(activation),
