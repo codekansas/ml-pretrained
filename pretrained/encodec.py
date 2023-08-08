@@ -23,7 +23,7 @@ import logging
 import math
 import warnings
 from dataclasses import dataclass
-from typing import Literal, cast, get_args
+from typing import Literal, Sequence, cast, get_args
 
 import numpy as np
 import torch
@@ -91,6 +91,8 @@ class NormConv1d(nn.Module):
     ) -> None:
         super().__init__()
 
+        param_norm: ParametrizationNormType
+        layer_norm: NormType
         if norm in get_args(ParametrizationNormType):
             param_norm = cast(ParametrizationNormType, norm)
             layer_norm = "no_norm"
@@ -117,6 +119,8 @@ class NormConvTranspose1d(nn.Module):
     ) -> None:
         super().__init__()
 
+        param_norm: ParametrizationNormType
+        layer_norm: NormType
         if norm in get_args(ParametrizationNormType):
             param_norm = cast(ParametrizationNormType, norm)
             layer_norm = "no_norm"
@@ -201,7 +205,7 @@ class SConvTranspose1d(nn.Module):
         kernel_size: int,
         stride: int = 1,
         causal: bool = False,
-        norm: NormType = "no_norm",
+        norm: NormType | ParametrizationNormType = "no_norm",
         norm_groups: int = 1,
         trim_right_ratio: float = 1.0,
     ) -> None:
@@ -265,12 +269,12 @@ class SEANetResnetBlock(nn.Module):
     def __init__(
         self,
         dim: int,
-        kernel_sizes: list[int] = [3, 1],
-        dilations: list[int] = [1, 1],
+        kernel_sizes: Sequence[int] = [3, 1],
+        dilations: Sequence[int] = [1, 1],
         activation: ActivationType = "elu",
         norm: NormType | ParametrizationNormType = "weight",
         causal: bool = False,
-        pad_mode: str = "reflect",
+        pad_mode: PadMode = "reflect",
         compress: int = 2,
         true_skip: bool = True,
     ) -> None:
@@ -321,7 +325,7 @@ class SEANetEncoder(nn.Module):
         dimension: int = 128,
         n_filters: int = 32,
         n_residual_layers: int = 1,
-        ratios: list[int] = [8, 5, 4, 2],
+        ratios: Sequence[int] = [8, 5, 4, 2],
         activation: ActivationType = "elu",
         norm: NormType | ParametrizationNormType = "weight",
         kernel_size: int = 7,
@@ -415,10 +419,10 @@ class SEANetDecoder(nn.Module):
         dimension: int = 128,
         n_filters: int = 32,
         n_residual_layers: int = 1,
-        ratios: list[int] = [8, 5, 4, 2],
+        ratios: Sequence[int] = [8, 5, 4, 2],
         activation: ActivationType = "elu",
         final_activation: ActivationType = "no_act",
-        norm: NormType = "weight",
+        norm: NormType | ParametrizationNormType = "weight",
         kernel_size: int = 7,
         last_kernel_size: int = 7,
         residual_kernel_size: int = 3,
@@ -543,7 +547,7 @@ class Encodec(nn.Module):
         encoder: SEANetEncoder,
         decoder: SEANetDecoder,
         quantizer: ResidualVectorQuantization,
-        target_bandwidths: list[float],
+        target_bandwidths: Sequence[float],
         sample_rate: int,
         channels: int,
         overlap: float = 0.01,
@@ -574,7 +578,7 @@ class Encodec(nn.Module):
     def encode(self, waveform: Tensor) -> Tensor:
         return _encode(waveform, encoder=self.encoder, quantizer=self.quantizer)
 
-    def decode(self, tokens: list[Tensor]) -> Tensor:
+    def decode(self, tokens: Tensor) -> Tensor:
         return _decode(tokens, decoder=self.decoder, quantizer=self.quantizer)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -605,7 +609,7 @@ class Decoder(nn.Module):
         self.decoder = encodec.decoder
         self.quantizer = encodec.quantizer
 
-    def decode(self, tokens: list[Tensor]) -> Tensor:
+    def decode(self, tokens: Tensor) -> Tensor:
         return _decode(tokens, decoder=self.decoder, quantizer=self.quantizer)
 
     def forward(self, waveform: Tensor) -> Tensor:
@@ -614,7 +618,7 @@ class Decoder(nn.Module):
 
 @dataclass
 class EncodecConfig:
-    target_bandwidths: list[int]
+    target_bandwidths: Sequence[float]
     sample_rate: int
     channels: int
     causal: bool
@@ -632,10 +636,7 @@ def _load_pretrained_encodec(
     decoder = SEANetDecoder(channels=config.channels, norm=config.norm, causal=config.causal)
     n_q = int(1000 * config.target_bandwidths[-1] // (math.ceil(config.sample_rate / encoder.hop_length) * 10))
     quantizer = ResidualVectorQuantization(
-        VectorQuantization(
-            dim=encoder.dimension,
-            codebook_size=1024,
-        ),
+        VectorQuantization(dim=encoder.dimension, codebook_size=1024),
         num_quantizers=n_q,
     )
     model = Encodec(
