@@ -212,7 +212,22 @@ class Decoder(nn.Module):
         return output_values
 
 
+def clip_waveform(
+    waveform: Tensor,
+    receptive_field_size: int,
+    waveform_leftover: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
+    if waveform_leftover is not None:
+        waveform = torch.cat([waveform_leftover, waveform], dim=1)
+    _, tsz = waveform.shape
+    tsz_leftover = tsz % receptive_field_size
+    waveform, waveform_leftover_out = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
+    return waveform, waveform_leftover_out
+
+
 class WavCodec(nn.Module):
+    __constants__ = ["receptive_field_size"]
+
     def __init__(
         self,
         num_layers: int,
@@ -271,7 +286,7 @@ class WavCodec(nn.Module):
             feat_proj_layer_norm=feat_proj_layer_norm,
         )
 
-        self.decoder = Decoder(
+        self.wav_decoder = Decoder(
             conv_dim=conv_dim,
             conv_stride=conv_stride,
             conv_kernel=conv_stride,
@@ -280,13 +295,64 @@ class WavCodec(nn.Module):
             feat_extract_activation=feat_extract_activation,
         )
 
-    def clip_waveform(self, waveform: Tensor, waveform_leftover: Tensor | None = None) -> tuple[Tensor, Tensor]:
-        if waveform_leftover is not None:
-            waveform = torch.cat([waveform_leftover, waveform], dim=1)
-        _, tsz = waveform.shape
-        tsz_leftover = tsz % self.receptive_field_size
-        waveform, waveform_leftover_out = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
-        return waveform, waveform_leftover_out
+    def forward(self, waveform: Tensor, state: WavCodecState | None = None) -> tuple[Tensor, Tensor, WavCodecState]:
+        waveform_leftover_prev = None if state is None else state.waveform_leftover
+        waveform, waveform_leftover = clip_waveform(waveform, self.receptive_field_size, waveform_leftover_prev)
+
+        # Extracts waveform features.
+        x: Tensor = self.extractor(waveform)
+
+        # Projects to the RNN space.
+        x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
+        x = self.input_projector(x)
+
+        # Runs the quantizer.
+        xq: Tensor = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
+        xq, _, vq_loss, _ = self.quantizer(xq)
+        xq = xq.transpose(1, 2)  # (B, C, T) -> (B, T, C)
+
+        # Shifts the encoded waveform by one timestep and adds quantized values.
+        bsz = x.shape[0]
+        x = torch.cat([self.init_state.expand(bsz, -1, -1), x[:, :-1, :]], dim=1)
+        x = x + xq
+
+        # Runs the RNN.
+        rnn_states = None if state is None else state.rnn_states
+        x, rnn_states_out = self.rnn(x, rnn_states)
+
+        # Projects to the output space.
+        x = self.output_projector(x)
+        x = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
+
+        # Decodes to a waveform.
+        x = self.wav_decoder(x)
+
+        # Gets the new state.
+        state_out = WavCodecState(
+            waveform_leftover=waveform_leftover,
+            rnn_states=rnn_states_out,
+        )
+
+        return x, vq_loss, state_out
+
+    def encoder(self) -> "WavCodecEncoder":
+        return WavCodecEncoder(self)
+
+    def decoder(self) -> "WavCodecDecoder":
+        return WavCodecDecoder(self)
+
+
+class WavCodecEncoder(nn.Module):
+    __constants__ = ["receptive_field_size"]
+
+    def __init__(self, codec: WavCodec) -> None:
+        super().__init__()
+
+        self.receptive_field_size = codec.receptive_field_size
+
+        self.extractor = codec.extractor
+        self.input_projector = codec.input_projector
+        self.quantizer = codec.quantizer
 
     def encode(self, waveform: Tensor) -> tuple[Tensor, Tensor]:
         """Encodes a given waveform into tensors.
@@ -298,7 +364,7 @@ class WavCodec(nn.Module):
             The encoded tokens, with shape (num_quantizers, B, T), and the
             leftover part of the waveform, with shape (B, T_leftover).
         """
-        waveform, waveform_leftover = self.clip_waveform(waveform)
+        waveform, waveform_leftover = clip_waveform(waveform, self.receptive_field_size)
 
         # Extracts waveform features.
         x: Tensor = self.extractor(waveform)
@@ -312,6 +378,22 @@ class WavCodec(nn.Module):
         x = self.quantizer.encode(x)
 
         return x, waveform_leftover
+
+    def forward(self, waveform: Tensor) -> tuple[Tensor, Tensor]:
+        return self.encode(waveform)
+
+
+class WavCodecDecoder(nn.Module):
+    def __init__(self, codec: WavCodec) -> None:
+        super().__init__()
+
+        self.extractor = codec.extractor
+        self.input_projector = codec.input_projector
+        self.quantizer = codec.quantizer
+        self.init_state = codec.init_state
+        self.rnn = codec.rnn
+        self.output_projector = codec.output_projector
+        self.wav_decoder = codec.wav_decoder
 
     def decode(
         self,
@@ -345,7 +427,7 @@ class WavCodec(nn.Module):
             x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
 
             # Decodes to a waveform.
-            x = self.decoder(x)
+            x = self.wav_decoder(x)
             xs.append(x)
 
             if t < tsz - 1:
@@ -360,44 +442,12 @@ class WavCodec(nn.Module):
         assert rnn_states is not None, "Empty tensor"
         return x, rnn_states
 
-    def forward(self, waveform: Tensor, state: WavCodecState | None = None) -> tuple[Tensor, Tensor, WavCodecState]:
-        waveform, waveform_leftover = self.clip_waveform(waveform, None if state is None else state.waveform_leftover)
-
-        # Extracts waveform features.
-        x: Tensor = self.extractor(waveform)
-
-        # Projects to the RNN space.
-        x = x.transpose(1, 2)  # (B, C, T) -> (B, T, C)
-        x = self.input_projector(x)
-
-        # Runs the quantizer.
-        xq: Tensor = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
-        xq, _, vq_loss, _ = self.quantizer(xq)
-        xq = xq.transpose(1, 2)  # (B, C, T) -> (B, T, C)
-
-        # Shifts the encoded waveform by one timestep and adds quantized values.
-        bsz = x.shape[0]
-        x = torch.cat([self.init_state.expand(bsz, -1, -1), x[:, :-1, :]], dim=1)
-        x = x + xq
-
-        # Runs the RNN.
-        rnn_states = None if state is None else state.rnn_states
-        x, rnn_states_out = self.rnn(x, rnn_states)
-
-        # Projects to the output space.
-        x = self.output_projector(x)
-        x = x.transpose(1, 2)  # (B, T, C) -> (B, C, T)
-
-        # Decodes to a waveform.
-        x = self.decoder(x)
-
-        # Gets the new state.
-        state_out = WavCodecState(
-            waveform_leftover=waveform_leftover,
-            rnn_states=rnn_states_out,
-        )
-
-        return x, vq_loss, state_out
+    def forward(
+        self,
+        tokens: Tensor,
+        rnn_states: tuple[Tensor, Tensor] | None = None,
+    ) -> tuple[Tensor, tuple[Tensor, Tensor]]:
+        return self.decode(tokens, rnn_states)
 
 
 def _load_pretrained_wav_codec(

@@ -15,7 +15,8 @@ def test_pretrained_wav_codec() -> None:
     assert reconstructed.shape == waveform.shape
 
     # Tests encoder-decoder.
-    tokens, waveform_leftover = model.encode(waveform)
-    decoded, _ = model.decode(tokens)
+    encoder, decoder = model.encoder(), model.decoder()
+    tokens, waveform_leftover = encoder.encode(waveform)
+    decoded, _ = decoder.decode(tokens)
     decoded = torch.cat([decoded, waveform_leftover], dim=1)
     assert torch.allclose(decoded, reconstructed)
