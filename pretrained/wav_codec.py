@@ -23,6 +23,7 @@ from typing import Literal, NamedTuple, cast, get_args
 
 import safetensors.torch
 import torch
+import torchaudio
 from ml.models.activations import ActivationType, get_activation
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
 from ml.models.norms import ConvLayerNorm
@@ -522,23 +523,33 @@ def pretrained_wav_codec(size: PretrainedWavCodecSize, load_weights: bool = True
 def test_wav_codec() -> None:
     configure_logging()
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
+    parser.add_argument("input_file", type=str, help="Path to input audio file")
+    parser.add_argument("output_file", type=str, help="Path to output audio file")
     parser.add_argument("-k", "--key", choices=get_args(PretrainedWavCodecSize), default="librivox")
-    parser.add_argument("-c", "--chunk-size", type=int, default=16000 // 10)
-    parser.add_argument("-n", "--num-chunks", type=int, default=50 * 10)
     args = parser.parse_args()
 
+    # Loads the audio file.
+    audio, sr = torchaudio.load(args.input_file)
+    audio = audio[:1]
+    audio = audio[:, : sr * 10]
+    if sr != 16000:
+        audio = torchaudio.functional.resample(audio, sr, 16000)
+
+    # Note: This normalizes the audio to the range [-1, 1], which may increase
+    # the volume of the audio if it is quiet.
+    audio = audio / audio.abs().max() * 0.999
+
+    # Runs the codec.
     model = pretrained_wav_codec(args.key)
-    state: WavCodecState | None = None
+    encoder, decoder = model.encoder(), model.decoder()
+    tokens, _ = encoder.encode(audio)
+    audio, _ = decoder.decode(tokens)
 
-    import sounddevice as sd  # type: ignore[import]
+    # Saves the audio.
+    torchaudio.save(args.output_file, audio, 16000)
 
-    with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
-        for _ in range(args.num_chunks):
-            data, overflowed = stream.read(args.chunk_size)
-            waveform = torch.from_numpy(data.reshape(1, -1)).float()
-            logits, state = model(waveform, state)
-            logger.info("Read: %s (overflowed: %s)", logits.argmax(-1).squeeze(0).cpu().tolist(), overflowed)
+    logger.info("Saved %s", args.output_file)
 
 
 if __name__ == "__main__":

@@ -408,7 +408,7 @@ def pretrained_mel_codec(key: PretrainedMelCodecType, load_weights: bool = True,
 def test_codec_adhoc() -> None:
     configure_logging()
 
-    parser = argparse.ArgumentParser(description="Runs adhoc test of mel to audio conversion")
+    parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
