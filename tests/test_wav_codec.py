@@ -1,0 +1,21 @@
+"""Runs some simple tests on the WavCodec model."""
+
+import torch
+
+from pretrained.wav_codec import pretrained_wav_codec
+
+
+def test_pretrained_wav_codec() -> None:
+    model = pretrained_wav_codec("librivox", load_weights=False)
+    model.double()
+
+    # Tests on a full batch.
+    waveform = torch.randn(2, 32000, dtype=torch.double)
+    reconstructed, _, _ = model(waveform)
+    assert reconstructed.shape == waveform.shape
+
+    # Tests encoder-decoder.
+    tokens, waveform_leftover = model.encode(waveform)
+    decoded, _ = model.decode(tokens)
+    decoded = torch.cat([decoded, waveform_leftover], dim=1)
+    assert torch.allclose(decoded, reconstructed)

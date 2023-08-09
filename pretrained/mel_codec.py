@@ -1,11 +1,11 @@
-"""Defines a simple API for an audio quantizer model.
+"""Defines a simple API for an audio quantizer model that runs on Mels.
 
 .. highlight:: python
 .. code-block:: python
 
-    from pretrained.codec import pretrained_codec
+    from pretrained.mel_codec import pretrained_mel_codec
 
-    model = pretrained_mel_codec("mel-librivox")
+    model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
 
     # Convert some audio to a quantized representation.
@@ -34,13 +34,13 @@ from pretrained.vocoder.hifigan import AudioToHifiGanMels, pretrained_hifigan
 
 logger = logging.getLogger(__name__)
 
-PretrainedCodecType = Literal["librivox"]
+PretrainedMelCodecType = Literal["librivox"]
 
 
-def cast_pretrained_codec_type(s: str) -> PretrainedCodecType:
-    if s not in get_args(PretrainedCodecType):
-        raise KeyError(f"Invalid Codec type: {s} Expected one of: {get_args(PretrainedCodecType)}")
-    return cast(PretrainedCodecType, s)
+def cast_pretrained_mel_codec_type(s: str) -> PretrainedMelCodecType:
+    if s not in get_args(PretrainedMelCodecType):
+        raise KeyError(f"Invalid Codec type: {s} Expected one of: {get_args(PretrainedMelCodecType)}")
+    return cast(PretrainedMelCodecType, s)
 
 
 @dataclass
@@ -287,8 +287,8 @@ class MelCodecDequantizer(nn.Module):
         return self.decode(tokens)
 
 
-def _load_pretrained_codec(
-    key: PretrainedCodecType,
+def _load_pretrained_mel_codec(
+    key: PretrainedMelCodecType,
     ckpt_url: str,
     sha256: str,
     load_weights: bool,
@@ -318,10 +318,10 @@ def _load_pretrained_codec(
     return model
 
 
-def pretrained_codec(key: PretrainedCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
+def pretrained_mel_codec(key: PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
     match key:
         case "librivox":
-            return _load_pretrained_codec(
+            return _load_pretrained_mel_codec(
                 key,
                 ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/codec_librivox.bin",
                 sha256="51cb5745591d116c822877469c6f6f398d74e1e2cd23e879b2b6ccc786dcb069",
@@ -362,7 +362,7 @@ def test_codec_adhoc() -> None:
     audio = audio / audio.abs().max() * 0.999
 
     # Loads the HiFi-GAN model.
-    model = pretrained_codec("librivox")
+    model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
     tokens = quantizer(audio)
     audio = dequantizer(tokens)
