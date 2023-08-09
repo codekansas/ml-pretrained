@@ -413,8 +413,7 @@ def test_causal_hubert() -> None:
     model = pretrained_causal_hubert(args.key)
     state: CausalHubertState | None = None
 
-    # Streams audio from the microphone and prints the predicted tokens.
-    import sounddevice as sd
+    import sounddevice as sd  # type: ignore[import]
 
     with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
         for _ in range(args.num_chunks):
