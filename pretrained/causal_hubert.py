@@ -15,7 +15,7 @@ to process chunks of audio as they come in.
 
     from pretrained.causal_hubert import pretrained_causal_hubert
 
-    model = pretrained_causal_hubert("base-l10-c100")
+    model = pretrained_causal_hubert("base-empty")
     state = None
 
     for waveform_chunk in waveform_chunks:
@@ -23,6 +23,7 @@ to process chunks of audio as they come in.
 """
 
 import argparse
+import logging
 import math
 import warnings
 from typing import Literal, NamedTuple, cast, get_args
@@ -33,15 +34,18 @@ import torch.nn.functional as F
 from ml.models.activations import ActivationType
 from ml.models.embeddings import get_positional_embeddings
 from ml.utils.checkpoint import ensure_downloaded
+from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
 
 from pretrained.hubert import HubertFeatureEncoder, HubertFeatureProjection
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CONV_DIM: tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
 DEFAULT_CONV_STRIDE: tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
 
-PretrainedCausalHubertSize = Literal["base-l10-c100", "base-empty"]
+PretrainedCausalHubertSize = Literal["base-empty"]
 
 
 def cast_pretrained_causal_hubert_key(s: str) -> PretrainedCausalHubertSize:
@@ -374,24 +378,6 @@ def _load_pretrained_causal_hubert(
 
 def pretrained_causal_hubert(size: PretrainedCausalHubertSize, load_weights: bool = True) -> CausalHubert:
     match size:
-        case "base-l10-c100":
-            return _load_pretrained_causal_hubert(
-                size=size,
-                ckpt_url="https://huggingface.co/codekansas/causal-hubert/resolve/main/base-l10-c100.bin",
-                sha256="ddec157eca6bd3beba64c97147d88dce1043d152af7c4b377bb22d26a8003c62",
-                hidden_size=768,
-                dim_feedforward=2048,
-                num_heads=12,
-                num_layers=6,
-                num_hubert_tokens=100,
-                local_attn=32,
-                load_weights=load_weights,
-                feat_extract_norm="group",
-                conv_bias=False,
-                do_stable_layer_norm=False,
-                pre_normalize=False,
-            )
-
         case "base-empty":
             if load_weights:
                 warnings.warn("No pretrained weights available for base-empty, using random weights")
@@ -409,8 +395,6 @@ def pretrained_causal_hubert(size: PretrainedCausalHubertSize, load_weights: boo
                 load_weights=False,
                 feat_extract_norm="group",
                 conv_bias=False,
-                do_stable_layer_norm=False,
-                pre_normalize=False,
             )
 
         case _:
@@ -418,20 +402,26 @@ def pretrained_causal_hubert(size: PretrainedCausalHubertSize, load_weights: boo
 
 
 def test_causal_hubert() -> None:
+    configure_logging()
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("-k", "--key", choices=get_args(PretrainedCausalHubertSize), default="base-l10-c100")
+    parser.add_argument("-k", "--key", choices=get_args(PretrainedCausalHubertSize), default="base-empty")
+    parser.add_argument("-c", "--chunk-size", type=int, default=16000 // 10)
+    parser.add_argument("-n", "--num-chunks", type=int, default=50 * 10)
     args = parser.parse_args()
 
     model = pretrained_causal_hubert(args.key)
+    state: CausalHubertState | None = None
 
     # Streams audio from the microphone and prints the predicted tokens.
     import sounddevice as sd
 
-    with sd.InputStream(samplerate=16000, channels=1, dtype="int16") as stream:
-        for block in stream:
-            waveform = torch.from_numpy(block.reshape(-1)).float()
-            tokens = model(waveform.unsqueeze(0))
-            print(tokens.argmax(-1).squeeze().tolist())
+    with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
+        for _ in range(args.num_chunks):
+            data, overflowed = stream.read(args.chunk_size)
+            waveform = torch.from_numpy(data.reshape(1, -1)).float()
+            logits, state = model(waveform, state)
+            logger.info("Read: %s (overflowed: %s)", logits.argmax(-1).squeeze(0).cpu().tolist(), overflowed)
 
 
 if __name__ == "__main__":

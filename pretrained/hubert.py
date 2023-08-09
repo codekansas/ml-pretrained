@@ -725,6 +725,8 @@ class Hubert(nn.Module):
         if sample_rate != 16_000:
             raise RuntimeError("HuBERT only supports 16 kHz as input sampling rate")
 
+        if self.pre_normalize:
+            input_values = F.layer_norm(input_values, input_values.shape[1:])
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(1, 2)
         hidden_states = self.feature_projection(extract_features)
@@ -740,6 +742,8 @@ class Hubert(nn.Module):
         if sample_rate != 16_000:
             raise RuntimeError("HuBERT only supports 16 kHz as input sampling rate")
 
+        if self.pre_normalize:
+            input_values = F.layer_norm(input_values, input_values.shape[1:])
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(1, 2)
         hidden_states = self.feature_projection(extract_features)
@@ -919,7 +923,7 @@ class HubertPredictor:
                 x = self.device.tensor_to(waveform_tensor)
 
                 if self.model.pre_normalize:
-                    x = F.layer_norm(x, x.shape)
+                    x = F.layer_norm(x, x.shape[1:])
 
                 feat_chunk = self.model.forward(x, self.sample_rate, causal=causal, output_layer=output_layer)
                 if self.kmeans is not None:
@@ -1180,6 +1184,8 @@ def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hub
 
 
 def test_hubert_adhoc() -> None:
+    configure_logging()
+
     parser = argparse.ArgumentParser()
     size_choices = get_args(PretrainedHubertSize) + get_args(PretrainedHubertKmeansSize)
     parser.add_argument("size", type=str, choices=size_choices)
@@ -1187,8 +1193,6 @@ def test_hubert_adhoc() -> None:
     parser.add_argument("-n", "--no-load-weights", default=False, action="store_true")
     parser.add_argument("-c", "--causal", default=False, action="store_true")
     args = parser.parse_args()
-
-    configure_logging()
 
     # Loads the model and moves to the right device.
     kmeans: KMeans | None
