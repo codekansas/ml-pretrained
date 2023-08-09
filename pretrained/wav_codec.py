@@ -6,13 +6,24 @@
     from pretrained.wav_codec import pretrained_wav_codec
 
     model = pretrained_wav_codec("librivox")
-    quantizer, dequantizer = model.quantizer(), model.dequantizer()
+    encoder, decoder = model.encoder(), model.decoder()
 
     # Convert some audio to a quantized representation.
-    quantized = quantizer(audio)
+    audio_leftover = None
+    all_tokens = []
+    for audio_chunk in audio_chunks:
+        if audio_leftover is not None:
+            audio_chunk = torch.cat([audio_leftover, audio_chunk], dim=1)
+        tokens, audio_leftover = encoder.encode(audio_chunk)
+        all_tokens.append(tokens)
 
     # Convert the quantized representation back to audio.
-    audio = dequantizer(quantized)
+    rnn_states = None
+    audio_chunks = []
+    for tokens in all_tokens:
+        audio_chunk, rnn_states = decoder.decode(tokens, rnn_states)
+        audio_chunks.append(audio_chunk)
+    reconstructed_audio = torch.cat(audio_chunks, dim=1)
 """
 
 import argparse
