@@ -116,8 +116,8 @@ class Attention(nn.Module):
         x = x.unflatten(0, (bsz, self.num_heads)).transpose(1, 2).flatten(2, 3)
 
         state_out = SelfAttentionState(
-            key=key[:, :, -self.local_attn:, :],
-            value=value[:, :, -self.local_attn:, :],
+            key=key[:, :, -self.local_attn :, :],
+            value=value[:, :, -self.local_attn :, :],
         )
 
         return self.dropout(x), state_out
