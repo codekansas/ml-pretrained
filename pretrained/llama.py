@@ -1,4 +1,3 @@
-# mypy: disable-error-code="import"
 """Defines a simple API for using Meta's pretrained LLaMa model.
 
 This code is adapted from the original implementation
@@ -267,7 +266,7 @@ class Tokenizer:
         assert model_path.is_file(), f"Tokenizer model file not found at {model_path}"
 
         try:
-            from sentencepiece import SentencePieceProcessor
+            from sentencepiece import SentencePieceProcessor  # type: ignore[import]
 
         except ImportError:
             raise ImportError("Please install sentencepiece with: `pip install sentencepiece`")
@@ -284,7 +283,7 @@ class Tokenizer:
         logger.info("Number of words: %d, BOS ID: %d, EOS ID: %d", self.n_words, self.bos_id, self.eos_id)
 
     def encode(self, s: str, bos: bool, eos: bool) -> list[int]:
-        assert type(s) is str
+        assert isinstance(s, str)
         t = self.sp_model.encode(s)
         if bos:
             t = [self.bos_id] + t
