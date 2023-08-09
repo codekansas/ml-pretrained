@@ -1,11 +1,11 @@
-"""Defines a simple API for an audio quantizer model.
+"""Defines a simple API for an audio quantizer model that runs on Mels.
 
 .. highlight:: python
 .. code-block:: python
 
-    from pretrained.codec import pretrained_codec
+    from pretrained.mel_codec import pretrained_mel_codec
 
-    model = pretrained_mel_codec("mel-librivox")
+    model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
 
     # Convert some audio to a quantized representation.
@@ -34,13 +34,13 @@ from pretrained.vocoder.hifigan import AudioToHifiGanMels, pretrained_hifigan
 
 logger = logging.getLogger(__name__)
 
-PretrainedCodecType = Literal["librivox"]
+PretrainedMelCodecType = Literal["librivox"]
 
 
-def cast_pretrained_codec_type(s: str) -> PretrainedCodecType:
-    if s not in get_args(PretrainedCodecType):
-        raise KeyError(f"Invalid Codec type: {s} Expected one of: {get_args(PretrainedCodecType)}")
-    return cast(PretrainedCodecType, s)
+def cast_pretrained_mel_codec_type(s: str) -> PretrainedMelCodecType:
+    if s not in get_args(PretrainedMelCodecType):
+        raise KeyError(f"Invalid Codec type: {s} Expected one of: {get_args(PretrainedMelCodecType)}")
+    return cast(PretrainedMelCodecType, s)
 
 
 @dataclass
@@ -75,6 +75,8 @@ class MelCodec(nn.Module):
         max_tsz: The maximum time dimension size.
     """
 
+    __constants__ = ["codebook_size", "num_mels", "encoder_causal"]
+
     def __init__(
         self,
         num_mels: int,
@@ -103,8 +105,9 @@ class MelCodec(nn.Module):
         )
 
         self.embs = get_positional_embeddings(max_tsz, d_model, "rotary")
-        self.register_buffer("mask", nn.Transformer.generate_square_subsequent_mask(max_tsz))
-        self.register_buffer("init_emb", torch.zeros(1, 1, d_model))
+        self.init_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+
+        self.register_buffer("mask", nn.Transformer.generate_square_subsequent_mask(max_tsz), persistent=False)
 
         self.encoder_transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
@@ -135,7 +138,6 @@ class MelCodec(nn.Module):
         self.out_proj = nn.Linear(d_model, num_mels)
 
     mask: Tensor
-    init_emb: Tensor
 
     def _featurize(self, x: Tensor) -> Tensor:
         x = self.enc_in_proj(x)
@@ -227,11 +229,27 @@ class MelCodec(nn.Module):
 
 
 class MelCodecQuantizer(nn.Module):
+    __constants__ = ["codebook_size", "num_mels", "encoder_causal"]
+
     def __init__(self, codec: MelCodec) -> None:
         super().__init__()
 
-        self.codec = codec
+        self.codebook_size = codec.codebook_size
+        self.num_mels = codec.num_mels
+        self.encoder_causal = codec.encoder_causal
+
+        # Copies the relevant attributes from the codec module.
+        self.rvq = codec.rvq
+        self.embs = codec.embs
+        self.init_emb = codec.init_emb
+        self.encoder_transformer = codec.encoder_transformer
+        self.enc_in_proj = codec.enc_in_proj
+
+        self.register_buffer("mask", codec.mask)
+
         self.mel_fn = AudioToHifiGanMels()
+
+    mask: Tensor
 
     def _get_mels(self, audio: Tensor) -> Tensor:
         if audio.dim() == 3:
@@ -242,6 +260,18 @@ class MelCodecQuantizer(nn.Module):
         audio_min, audio_max = audio.aminmax(dim=-1, keepdim=True)
         audio = audio / torch.maximum(audio_max, -audio_min).clamp_min(1e-2) * 0.999
         return self.mel_fn.wav_to_mels(audio.flatten(1)).transpose(1, 2)
+
+    def _featurize(self, x: Tensor) -> Tensor:
+        x = self.enc_in_proj(x)
+        x = self.embs(x)
+        if self.encoder_causal:
+            x = self.encoder_transformer(x, mask=self.mask, is_causal=True)
+        else:
+            x = self.encoder_transformer(x, is_causal=False)
+        return x
+
+    def _pre_quant_to_tokens(self, xq: Tensor) -> Tensor:
+        return self.rvq.encode(xq.transpose(1, 2))
 
     def encode(self, audio: Tensor) -> Tensor:
         """Converts a waveform to a set of tokens.
@@ -254,7 +284,9 @@ class MelCodecQuantizer(nn.Module):
             The quantized tokens, with shape ``(N, B, Tq)``
         """
         mels = self._get_mels(audio)
-        return self.codec.encode(mels)
+        xq = self._featurize(mels)
+        xq = self._pre_quant_to_tokens(xq)
+        return xq
 
     def forward(self, audio: Tensor) -> Tensor:
         return self.encode(audio)
@@ -264,11 +296,41 @@ class MelCodecDequantizer(nn.Module):
     def __init__(self, codec: MelCodec) -> None:
         super().__init__()
 
-        self.codec = codec
+        self.codebook_size = codec.codebook_size
+        self.num_mels = codec.num_mels
+        self.encoder_causal = codec.encoder_causal
+
+        # Copies the relevant attributes from the codec module.
+        self.rvq = codec.rvq
+        self.embs = codec.embs
+        self.init_emb = codec.init_emb
+        self.decoder_transformer = codec.decoder_transformer
+        self.dec_in_proj = codec.dec_in_proj
+        self.out_proj = codec.out_proj
+
+        self.register_buffer("mask", codec.mask)
+
         self.hifigan = pretrained_hifigan()
+
+    mask: Tensor
 
     def _get_audio(self, mels: Tensor) -> Tensor:
         return self.hifigan(mels.transpose(1, 2)).squeeze(1)
+
+    def _tokens_to_embedding(self, tokens: Tensor) -> Tensor:
+        return self.rvq.decode(tokens).transpose(1, 2)
+
+    def _infer_from_codes(self, x_codes: Tensor) -> Tensor:
+        init_emb = self.init_emb.repeat(x_codes.shape[0], 1, 1)
+        x_nb = init_emb
+        tsz = x_codes.shape[1]
+        for t in range(tsz):
+            x = x_codes[:, : x_nb.shape[1]] + x_nb
+            x = self.decoder_transformer(x, mask=self.mask, is_causal=True)
+            x = self.out_proj(x)
+            if t < tsz - 1:
+                x_nb = torch.cat([init_emb, self.dec_in_proj(x)], dim=1)
+        return x
 
     def decode(self, tokens: Tensor) -> Tensor:
         """Converts a set of tokens to a waveform.
@@ -280,15 +342,16 @@ class MelCodecDequantizer(nn.Module):
         Returns:
             The decoded waveform, with shape ``(B, T)``
         """
-        mels_rec = self.codec.decode(tokens)
-        return self._get_audio(mels_rec)
+        xq = self._tokens_to_embedding(tokens)
+        x = self._infer_from_codes(xq)
+        return self._get_audio(x)
 
     def forward(self, tokens: Tensor) -> Tensor:
         return self.decode(tokens)
 
 
-def _load_pretrained_codec(
-    key: PretrainedCodecType,
+def _load_pretrained_mel_codec(
+    key: PretrainedMelCodecType,
     ckpt_url: str,
     sha256: str,
     load_weights: bool,
@@ -318,13 +381,13 @@ def _load_pretrained_codec(
     return model
 
 
-def pretrained_codec(key: PretrainedCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
+def pretrained_mel_codec(key: PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
     match key:
         case "librivox":
-            return _load_pretrained_codec(
+            return _load_pretrained_mel_codec(
                 key,
-                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/codec_librivox.bin",
-                sha256="51cb5745591d116c822877469c6f6f398d74e1e2cd23e879b2b6ccc786dcb069",
+                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/librivox.bin",
+                sha256="7d884aebaf4ac1f56fb64191121a253a5f3446a1e4e68ad20ff94905158bdab3",
                 load_weights=load_weights,
                 config=MelCodecConfig(
                     num_mels=80,
@@ -345,7 +408,7 @@ def pretrained_codec(key: PretrainedCodecType, load_weights: bool = True, max_ts
 def test_codec_adhoc() -> None:
     configure_logging()
 
-    parser = argparse.ArgumentParser(description="Runs adhoc test of mel to audio conversion")
+    parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
@@ -362,7 +425,7 @@ def test_codec_adhoc() -> None:
     audio = audio / audio.abs().max() * 0.999
 
     # Loads the HiFi-GAN model.
-    model = pretrained_codec("librivox")
+    model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
     tokens = quantizer(audio)
     audio = dequantizer(tokens)
@@ -374,5 +437,5 @@ def test_codec_adhoc() -> None:
 
 
 if __name__ == "__main__":
-    # python -m pretrained.codec
+    # python -m pretrained.mel_codec
     test_codec_adhoc()

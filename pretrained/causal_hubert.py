@@ -60,6 +60,7 @@ class SelfAttentionState(NamedTuple):
 
 
 class CausalHubertState(NamedTuple):
+    offset: int
     waveform_leftover: Tensor
     attn_states: list[SelfAttentionState]
 
@@ -307,6 +308,11 @@ class CausalHubert(nn.Module):
         x = self.hubert_extractor(waveform).transpose(1, 2)
         x = self.hubert_projector(x)
 
+        # Adds the positional embeddings.
+        offset = 0 if state is None else state.offset
+        x = self.hubert_pos_embs(x, offset=offset)
+        offset += x.shape[1]
+
         # Runs the transformer.
         x, attn_states_out = self.hubert_transformer(x, attn_states)
 
@@ -315,6 +321,7 @@ class CausalHubert(nn.Module):
 
         # Gets the new state.
         state_out = CausalHubertState(
+            offset=offset,
             waveform_leftover=waveform_leftover,
             attn_states=attn_states_out,
         )

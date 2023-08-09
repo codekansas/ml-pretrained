@@ -44,6 +44,7 @@ import torch.nn.functional as F
 import torchaudio.sox_effects as ta_sox
 from ml.models.activations import ActivationType, get_activation
 from ml.models.kmeans import KMeans
+from ml.models.norms import ConvLayerNorm
 from ml.utils.audio import Reader, get_audio_props, read_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import detect_device
@@ -111,7 +112,7 @@ class HubertSamePadLayer(nn.Module):
         return hidden_states
 
 
-class HubertPositionalConvEmbedding(nn.Module):
+class PositionalConvEmbedding(nn.Module):
     def __init__(
         self,
         hidden_size: int,
@@ -147,7 +148,7 @@ class HubertPositionalConvEmbedding(nn.Module):
         self.conv = nn.utils.remove_weight_norm(self.conv)
 
 
-class HubertAttention(nn.Module):
+class Attention(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int, bias: bool = True) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -188,7 +189,7 @@ class HubertAttention(nn.Module):
         return final_output
 
 
-class HubertFeedForward(nn.Module):
+class FeedForward(nn.Module):
     def __init__(
         self,
         hidden_size: int,
@@ -227,10 +228,10 @@ class HubertEncoderLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.attention = HubertAttention(embed_dim=hidden_size, num_heads=num_attention_heads)
+        self.attention = Attention(embed_dim=hidden_size, num_heads=num_attention_heads)
         self.dropout = nn.Dropout(hidden_dropout)
         self.layer_norm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
-        self.feed_forward = HubertFeedForward(
+        self.feed_forward = FeedForward(
             hidden_size=hidden_size,
             intermediate_size=intermediate_size,
             hidden_act=hidden_act,
@@ -269,7 +270,7 @@ class HubertEncoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.pos_conv_embed = HubertPositionalConvEmbedding(
+        self.pos_conv_embed = PositionalConvEmbedding(
             hidden_size=hidden_size,
             num_conv_pos_embeddings=num_conv_pos_embeddings,
             num_conv_pos_embedding_groups=num_conv_pos_embedding_groups,
@@ -329,33 +330,24 @@ class HubertEncoder(nn.Module):
         self.pos_conv_embed.remove_weight_norm_()
 
 
-class HubertGroupNormConvLayer(nn.Module):
+class GroupNormConvLayer(nn.Module):
     def __init__(
         self,
-        conv_dim: tuple[int, ...],
-        conv_stride: tuple[int, ...],
-        conv_kernel: tuple[int, ...],
-        conv_bias: bool,
+        in_channels: int,
+        out_channels: int,
+        stride: int,
+        kernel: int,
+        bias: bool = True,
         feat_extract_activation: ActivationType = "gelu",
-        layer_id: int = 0,
     ) -> None:
         super().__init__()
 
-        assert len(conv_dim) == len(conv_stride) == len(conv_kernel)
+        self.in_conv_dim = in_channels
+        self.out_conv_dim = out_channels
 
-        self.in_conv_dim = conv_dim[layer_id - 1] if layer_id > 0 else 1
-        self.out_conv_dim = conv_dim[layer_id]
-
-        self.conv = nn.Conv1d(
-            self.in_conv_dim,
-            self.out_conv_dim,
-            kernel_size=conv_kernel[layer_id],
-            stride=conv_stride[layer_id],
-            bias=conv_bias,
-        )
-        self.activation = get_activation(feat_extract_activation)
-
+        self.conv = nn.Conv1d(self.in_conv_dim, self.out_conv_dim, kernel_size=kernel, stride=stride, bias=bias)
         self.layer_norm = nn.GroupNorm(num_groups=self.out_conv_dim, num_channels=self.out_conv_dim, affine=True)
+        self.activation = get_activation(feat_extract_activation)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         hidden_states = self.conv(hidden_states)
@@ -364,30 +356,22 @@ class HubertGroupNormConvLayer(nn.Module):
         return hidden_states
 
 
-class HubertNoLayerNormConvLayer(nn.Module):
+class NoLayerNormConvLayer(nn.Module):
     def __init__(
         self,
-        conv_dim: tuple[int, ...],
-        conv_stride: tuple[int, ...],
-        conv_kernel: tuple[int, ...],
-        conv_bias: bool,
+        in_channels: int,
+        out_channels: int,
+        stride: int,
+        kernel: int,
+        bias: bool = True,
         feat_extract_activation: ActivationType = "gelu",
-        layer_id: int = 0,
     ) -> None:
         super().__init__()
 
-        assert len(conv_dim) == len(conv_stride) == len(conv_kernel)
+        self.in_conv_dim = in_channels
+        self.out_conv_dim = out_channels
 
-        self.in_conv_dim = conv_dim[layer_id - 1] if layer_id > 0 else 1
-        self.out_conv_dim = conv_dim[layer_id]
-
-        self.conv = nn.Conv1d(
-            self.in_conv_dim,
-            self.out_conv_dim,
-            kernel_size=conv_kernel[layer_id],
-            stride=conv_stride[layer_id],
-            bias=conv_bias,
-        )
+        self.conv = nn.Conv1d(self.in_conv_dim, self.out_conv_dim, kernel_size=kernel, stride=stride, bias=bias)
         self.activation = get_activation(feat_extract_activation)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
@@ -396,40 +380,28 @@ class HubertNoLayerNormConvLayer(nn.Module):
         return hidden_states
 
 
-class HubertLayerNormConvLayer(nn.Module):
+class LayerNormConvLayer(nn.Module):
     def __init__(
         self,
-        conv_dim: tuple[int, ...] = DEFAULT_CONV_DIM,
-        conv_stride: tuple[int, ...] = DEFAULT_CONV_STRIDE,
-        conv_kernel: tuple[int, ...] = DEFAULT_CONV_KERNEL,
-        conv_bias: bool = True,
+        in_channels: int,
+        out_channels: int,
+        stride: int,
+        kernel: int,
+        bias: bool = True,
         feat_extract_activation: ActivationType = "gelu",
-        layer_id: int = 0,
     ) -> None:
         super().__init__()
 
-        assert len(conv_dim) == len(conv_stride) == len(conv_kernel)
+        self.in_conv_dim = in_channels
+        self.out_conv_dim = out_channels
 
-        self.in_conv_dim = conv_dim[layer_id - 1] if layer_id > 0 else 1
-        self.out_conv_dim = conv_dim[layer_id]
-
-        self.conv = nn.Conv1d(
-            self.in_conv_dim,
-            self.out_conv_dim,
-            kernel_size=conv_kernel[layer_id],
-            stride=conv_stride[layer_id],
-            bias=conv_bias,
-        )
-        self.layer_norm = nn.LayerNorm(self.out_conv_dim, elementwise_affine=True)
+        self.conv = nn.Conv1d(self.in_conv_dim, self.out_conv_dim, kernel_size=kernel, stride=stride, bias=bias)
+        self.layer_norm = ConvLayerNorm(self.out_conv_dim, dims=1, elementwise_affine=True)
         self.activation = get_activation(feat_extract_activation)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         hidden_states = self.conv(hidden_states)
-
-        hidden_states = hidden_states.transpose(-2, -1)
         hidden_states = self.layer_norm(hidden_states)
-        hidden_states = hidden_states.transpose(-2, -1)
-
         hidden_states = self.activation(hidden_states)
         return hidden_states
 
@@ -452,36 +424,36 @@ class HubertFeatureEncoder(nn.Module):
         conv_layers: list[nn.Module] = []
         if feat_extract_norm == "group":
             conv_layers += [
-                HubertGroupNormConvLayer(
-                    conv_dim=conv_dim,
-                    conv_stride=conv_stride,
-                    conv_kernel=conv_kernel,
-                    conv_bias=conv_bias,
+                GroupNormConvLayer(
+                    in_channels=1,
+                    out_channels=conv_dim[0],
+                    stride=conv_stride[0],
+                    kernel=conv_kernel[0],
+                    bias=conv_bias,
                     feat_extract_activation=feat_extract_activation,
-                    layer_id=0,
                 )
             ]
             for i in range(num_feat_extract_layers - 1):
                 conv_layers += [
-                    HubertNoLayerNormConvLayer(
-                        conv_dim=conv_dim,
-                        conv_stride=conv_stride,
-                        conv_kernel=conv_kernel,
-                        conv_bias=conv_bias,
+                    NoLayerNormConvLayer(
+                        in_channels=conv_dim[i],
+                        out_channels=conv_dim[i + 1],
+                        stride=conv_stride[i + 1],
+                        kernel=conv_kernel[i + 1],
+                        bias=conv_bias,
                         feat_extract_activation=feat_extract_activation,
-                        layer_id=i + 1,
                     )
                 ]
         elif feat_extract_norm == "layer":
             for i in range(num_feat_extract_layers):
                 conv_layers += [
-                    HubertLayerNormConvLayer(
-                        conv_dim=conv_dim,
-                        conv_stride=conv_stride,
-                        conv_kernel=conv_kernel,
-                        conv_bias=conv_bias,
+                    LayerNormConvLayer(
+                        in_channels=1 if i == 0 else conv_dim[i - 1],
+                        out_channels=conv_dim[i],
+                        stride=conv_stride[i],
+                        kernel=conv_kernel[i],
+                        bias=conv_bias,
                         feat_extract_activation=feat_extract_activation,
-                        layer_id=i,
                     )
                 ]
         else:
@@ -537,10 +509,10 @@ class HubertEncoderLayerStableLayerNorm(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.attention = HubertAttention(embed_dim=hidden_size, num_heads=num_attention_heads)
+        self.attention = Attention(embed_dim=hidden_size, num_heads=num_attention_heads)
         self.dropout = nn.Dropout(hidden_dropout)
         self.layer_norm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
-        self.feed_forward = HubertFeedForward(
+        self.feed_forward = FeedForward(
             hidden_size=hidden_size,
             intermediate_size=intermediate_size,
             hidden_act=hidden_act,
@@ -576,7 +548,7 @@ class HubertEncoderStableLayerNorm(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.pos_conv_embed = HubertPositionalConvEmbedding(
+        self.pos_conv_embed = PositionalConvEmbedding(
             hidden_size=hidden_size,
             num_conv_pos_embeddings=num_conv_pos_embeddings,
             num_conv_pos_embedding_groups=num_conv_pos_embedding_groups,
