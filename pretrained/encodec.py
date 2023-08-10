@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 PretrainedEncodecSize = Literal["24khz"]
 
+
+def cast_pretrained_encodec_type(s: str) -> PretrainedEncodecSize:
+    if s not in get_args(PretrainedEncodecSize):
+        raise KeyError(f"Invalid Enodec type: {s} Expected one of: {get_args(PretrainedEncodecSize)}")
+    return cast(PretrainedEncodecSize, s)
+
+
 PadMode = Literal["reflect", "replicate", "circular", "constant"]
 
 
@@ -663,11 +670,11 @@ def _load_pretrained_encodec(
     return model
 
 
-def pretrained_encodec(size: PretrainedEncodecSize, load_weights: bool = True) -> Encodec:
+def pretrained_encodec(size: str | PretrainedEncodecSize, load_weights: bool = True) -> Encodec:
     match size:
         case "24khz":
             return _load_pretrained_encodec(
-                size,
+                cast_pretrained_encodec_type(size),
                 ckpt_url="https://dl.fbaipublicfiles.com/encodec/v0/encodec_24khz-d7cc33bc.th",
                 sha256="d7cc33bcf1aad7f2dad9836f36431530744abeace3ca033005e3290ed4fa47bf",
                 config=EncodecConfig(

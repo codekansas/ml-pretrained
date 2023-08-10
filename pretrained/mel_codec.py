@@ -381,11 +381,11 @@ def _load_pretrained_mel_codec(
     return model
 
 
-def pretrained_mel_codec(key: PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
+def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
     match key:
         case "librivox":
             return _load_pretrained_mel_codec(
-                key,
+                cast_pretrained_mel_codec_type(key),
                 ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/librivox.bin",
                 sha256="7d884aebaf4ac1f56fb64191121a253a5f3446a1e4e68ad20ff94905158bdab3",
                 load_weights=load_weights,
