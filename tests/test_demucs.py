@@ -18,6 +18,7 @@ def test_demucs_streamer_matches_training() -> None:
     os.environ["USE_BF16"] = "0"
     os.environ["USE_FP32"] = "0"
     os.environ["USE_FP64"] = "1"
+    os.environ["DISABLE_METAL"] = "1"
 
     device = detect_device()
 
