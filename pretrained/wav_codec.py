@@ -166,7 +166,6 @@ class Decoder(nn.Module):
         conv_stride: tuple[int, ...] = DEFAULT_CONV_STRIDE,
         conv_kernel: tuple[int, ...] = DEFAULT_CONV_KERNEL,
         conv_bias: bool = True,
-        feat_extract_norm: Literal["group", "layer"] = "layer",
         feat_extract_activation: ActivationType = "gelu",
     ) -> None:
         super().__init__()
@@ -175,42 +174,27 @@ class Decoder(nn.Module):
         num_feat_extract_layers = len(conv_dim)
 
         conv_layers: list[nn.Module] = []
-        if feat_extract_norm == "group":
+        conv_layers += [
+            GroupNormConvTransposeLayer(
+                in_channels=conv_dim[-1],
+                out_channels=conv_dim[-2],
+                stride=conv_stride[-1],
+                kernel=conv_kernel[-1],
+                bias=conv_bias,
+                feat_extract_activation=feat_extract_activation,
+            )
+        ]
+        for i in range(num_feat_extract_layers - 2, -1, -1):
             conv_layers += [
-                GroupNormConvTransposeLayer(
-                    in_channels=conv_dim[-1],
-                    out_channels=conv_dim[-2],
-                    stride=conv_stride[-1],
-                    kernel=conv_kernel[-1],
+                NoLayerNormConvTransposeLayer(
+                    in_channels=conv_dim[i],
+                    out_channels=1 if i == 0 else conv_dim[i - 1],
+                    stride=conv_stride[i],
+                    kernel=conv_kernel[i],
                     bias=conv_bias,
                     feat_extract_activation=feat_extract_activation,
                 )
             ]
-            for i in range(num_feat_extract_layers - 2, -1, -1):
-                conv_layers += [
-                    NoLayerNormConvTransposeLayer(
-                        in_channels=conv_dim[i],
-                        out_channels=1 if i == 0 else conv_dim[i - 1],
-                        stride=conv_stride[i],
-                        kernel=conv_kernel[i],
-                        bias=conv_bias,
-                        feat_extract_activation=feat_extract_activation,
-                    )
-                ]
-        elif feat_extract_norm == "layer":
-            for i in range(num_feat_extract_layers - 1, -1, -1):
-                conv_layers += [
-                    LayerNormConvTransposeLayer(
-                        in_channels=conv_dim[i],
-                        out_channels=1 if i == 0 else conv_dim[i - 1],
-                        stride=conv_stride[i],
-                        kernel=conv_kernel[i],
-                        bias=conv_bias,
-                        feat_extract_activation=feat_extract_activation,
-                    )
-                ]
-        else:
-            raise ValueError(f"{feat_extract_norm=}, but has to be one of ['group', 'layer']")
         self.conv_layers = nn.ModuleList(conv_layers)
 
     def _freeze_parameters(self) -> None:
@@ -303,7 +287,6 @@ class WavCodec(nn.Module):
             conv_stride=conv_stride,
             conv_kernel=conv_stride,
             conv_bias=conv_bias,
-            feat_extract_norm=feat_extract_norm,
             feat_extract_activation=feat_extract_activation,
         )
 
