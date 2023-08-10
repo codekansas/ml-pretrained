@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONV_DIM: tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
 DEFAULT_CONV_STRIDE: tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
-DEFAULT_CONV_KERNEL: tuple[int, ...] = (10, 3, 3, 3, 3, 2, 2)
 
 PretrainedWavCodecSize = Literal["librivox"]
 
@@ -128,13 +127,12 @@ class Encoder(nn.Module):
         hidden_size: int,
         conv_dim: tuple[int, ...] = DEFAULT_CONV_DIM,
         conv_stride: tuple[int, ...] = DEFAULT_CONV_STRIDE,
-        conv_kernel: tuple[int, ...] = DEFAULT_CONV_KERNEL,
         conv_bias: bool = True,
         feat_extract_activation: ActivationType = "gelu",
     ) -> None:
         super().__init__()
 
-        assert len(conv_dim) == len(conv_stride) == len(conv_kernel)
+        assert len(conv_dim) == len(conv_stride)
         num_feat_extract_layers = len(conv_dim)
 
         conv_layers: list[nn.Module] = []
@@ -144,7 +142,7 @@ class Encoder(nn.Module):
                     in_channels=1 if i == 0 else conv_dim[i - 1],
                     out_channels=conv_dim[i],
                     stride=conv_stride[i],
-                    kernel=conv_kernel[i],
+                    kernel=conv_stride[i],
                     bias=conv_bias,
                     feat_extract_activation=feat_extract_activation,
                 ),
@@ -178,7 +176,6 @@ class Decoder(nn.Module):
         hidden_size: int,
         conv_dim: tuple[int, ...] = DEFAULT_CONV_DIM,
         conv_stride: tuple[int, ...] = DEFAULT_CONV_STRIDE,
-        conv_kernel: tuple[int, ...] = DEFAULT_CONV_KERNEL,
         conv_bias: bool = True,
         feat_extract_activation: ActivationType = "gelu",
     ) -> None:
@@ -204,7 +201,7 @@ class Decoder(nn.Module):
                     in_channels=conv_dim[i],
                     out_channels=1 if i == 0 else conv_dim[i - 1],
                     stride=conv_stride[i],
-                    kernel=conv_kernel[i],
+                    kernel=conv_stride[i],
                     bias=conv_bias,
                     feat_extract_activation=feat_extract_activation,
                 ),
