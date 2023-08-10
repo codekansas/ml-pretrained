@@ -254,7 +254,6 @@ class WavCodec(nn.Module):
             hidden_size=hidden_size,
             conv_dim=conv_dim,
             conv_stride=conv_stride,
-            conv_kernel=conv_stride,
             conv_bias=conv_bias,
             feat_extract_activation=feat_extract_activation,
         )
@@ -263,7 +262,6 @@ class WavCodec(nn.Module):
             hidden_size=hidden_size,
             conv_dim=conv_dim,
             conv_stride=conv_stride,
-            conv_kernel=conv_stride,
             conv_bias=conv_bias,
             feat_extract_activation=feat_extract_activation,
         )
@@ -286,7 +284,6 @@ class WavCodec(nn.Module):
             hidden_size=hidden_size,
             conv_dim=conv_dim,
             conv_stride=conv_stride,
-            conv_kernel=conv_stride,
             conv_bias=conv_bias,
             feat_extract_activation=feat_extract_activation,
         )
