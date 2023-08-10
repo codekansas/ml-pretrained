@@ -28,11 +28,8 @@ class Encoder(nn.Module):
             nn.ReLU(),
         )
 
-        # self.rnn = nn.LSTM(stride_length, hidden_size, num_layers=2, batch_first=True)
-
     def forward(self, x: Tensor) -> Tensor:
         x = x.unflatten(-1, (-1, self.stride_length))
-        # x, _ = self.rnn(x)
         x = self.in_proj(x)
         return x
 
@@ -56,8 +53,8 @@ class Autoencoder(nn.Module):
         self,
         stride_length: int = 320,
         hidden_size: int = 512,
-        codebook_size: int = 1024,
-        num_quantizers: int = 4,
+        codebook_size: int = 512,
+        num_quantizers: int = 8,
     ) -> None:
         super().__init__()
 
