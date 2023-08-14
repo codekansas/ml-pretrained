@@ -15,7 +15,7 @@ to process chunks of audio as they come in.
 
     from pretrained.causal_hubert import pretrained_causal_hubert
 
-    model = pretrained_causal_hubert("base-empty")
+    model = pretrained_causal_hubert("base-conv-encoder")
     state = None
 
     for waveform_chunk in waveform_chunks:
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONV_DIM: tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
 DEFAULT_CONV_STRIDE: tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
 
-PretrainedCausalHubertSize = Literal["base-empty"]
+PretrainedCausalHubertSize = Literal["base-conv-encoder", "base-linear-encoder-empty"]
 
 
 def cast_pretrained_causal_hubert_key(s: str) -> PretrainedCausalHubertSize:
@@ -329,6 +329,76 @@ class CausalHubert(nn.Module):
         return x, state_out
 
 
+class CausalHubertLinear(nn.Module):
+    __constants__ = ["receptive_field_size"]
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        dim_feedforward: int,
+        num_layers: int,
+        num_hubert_tokens: int,
+        local_attn: int,
+        receptive_field_size: int = 320,
+        max_tsz: int = 2048,
+    ) -> None:
+        super().__init__()
+
+        self.receptive_field_size = receptive_field_size
+
+        self.extractor = nn.Linear(
+            in_features=receptive_field_size,
+            out_features=hidden_size,
+        )
+
+        self.hubert_pos_embs = get_positional_embeddings(max_tsz, hidden_size, "rotary")
+
+        self.hubert_transformer = SelfAttention(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            dim_feedforward=dim_feedforward,
+            num_layers=num_layers,
+            local_attn=local_attn,
+            max_tsz=max_tsz,
+        )
+
+        self.token_projector = nn.Linear(hidden_size, num_hubert_tokens)
+
+    def forward(self, waveform: Tensor, state: CausalHubertState | None = None) -> tuple[Tensor, CausalHubertState]:
+        # Prepends the leftover waveform from the previous call.
+        attn_states: list[SelfAttentionState] | None = None
+        if state is not None:
+            waveform = torch.cat([state.waveform_leftover, waveform], dim=1)
+            attn_states = state.attn_states
+        _, tsz = waveform.shape
+        tsz_leftover = tsz % self.receptive_field_size
+        waveform, waveform_leftover = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
+
+        x = waveform.unflatten(1, (-1, self.receptive_field_size))
+        x = self.extractor(x)
+
+        # Adds the positional embeddings.
+        offset = 0 if state is None else state.offset
+        x = self.hubert_pos_embs(x, offset=offset)
+        offset += x.shape[1]
+
+        # Runs the transformer.
+        x, attn_states_out = self.hubert_transformer(x, attn_states)
+
+        # Predicts the output tokens.
+        x = self.token_projector(x)
+
+        # Gets the new state.
+        state_out = CausalHubertState(
+            offset=offset,
+            waveform_leftover=waveform_leftover,
+            attn_states=attn_states_out,
+        )
+
+        return x, state_out
+
+
 def _load_pretrained_causal_hubert(
     size: PretrainedCausalHubertSize,
     ckpt_url: str,
@@ -383,13 +453,72 @@ def _load_pretrained_causal_hubert(
     return model
 
 
-def pretrained_causal_hubert(size: PretrainedCausalHubertSize, load_weights: bool = True) -> CausalHubert:
-    match size:
-        case "base-empty":
-            if load_weights:
-                warnings.warn("No pretrained weights available for base-empty, using random weights")
+def _load_pretrained_causal_hubert_linear(
+    size: PretrainedCausalHubertSize,
+    ckpt_url: str,
+    sha256: str,
+    hidden_size: int,
+    num_heads: int,
+    dim_feedforward: int,
+    num_layers: int,
+    num_hubert_tokens: int,
+    local_attn: int,
+    load_weights: bool = True,
+    receptive_field_size: int = 320,
+    max_tsz: int = 2048,
+) -> CausalHubertLinear:
+    with Timer("building empty model", spinner=True):
+        model = CausalHubertLinear(
+            hidden_size=hidden_size,
+            num_heads=num_heads,
+            dim_feedforward=dim_feedforward,
+            num_layers=num_layers,
+            num_hubert_tokens=num_hubert_tokens,
+            local_attn=local_attn,
+            receptive_field_size=receptive_field_size,
+            max_tsz=max_tsz,
+        )
 
+    # Loads the model weights.
+    if load_weights:
+        model_fname = f"{size}.bin"
+
+        with Timer("downloading checkpoint"):
+            model_path = ensure_downloaded(ckpt_url, "causal-hubert", model_fname, sha256=sha256)
+
+        with Timer("loading checkpoint", spinner=True):
+            ckpt = safetensors.torch.load_file(model_path, device="cpu")
+            model.load_state_dict(ckpt)
+
+    return model
+
+
+def pretrained_causal_hubert(
+    size: PretrainedCausalHubertSize,
+    load_weights: bool = True,
+) -> CausalHubert | CausalHubertLinear:
+    match size:
+        case "base-conv-encoder":
             return _load_pretrained_causal_hubert(
+                size=size,
+                ckpt_url="https://huggingface.co/codekansas/causal-hubert/resolve/main/base-conv-encoder.bin",
+                sha256="ff613b7d2bb02bde015e153c00406acbe67a5d133ace36bafbe55cdf931c1b34",
+                hidden_size=768,
+                dim_feedforward=2048,
+                num_heads=12,
+                num_layers=6,
+                num_hubert_tokens=100,
+                local_attn=32,
+                load_weights=load_weights,
+                feat_extract_norm="layer",
+                conv_bias=True,
+            )
+
+        case "base-linear-encoder-empty":
+            if load_weights:
+                warnings.warn("No weights available for base-linear-encoder-empty, returning empty model")
+
+            return _load_pretrained_causal_hubert_linear(
                 size=size,
                 ckpt_url="",
                 sha256="",
@@ -400,8 +529,6 @@ def pretrained_causal_hubert(size: PretrainedCausalHubertSize, load_weights: boo
                 num_hubert_tokens=100,
                 local_attn=32,
                 load_weights=False,
-                feat_extract_norm="group",
-                conv_bias=False,
             )
 
         case _:
@@ -412,7 +539,7 @@ def test_causal_hubert() -> None:
     configure_logging()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-k", "--key", choices=get_args(PretrainedCausalHubertSize), default="base-empty")
+    parser.add_argument("-k", "--key", choices=get_args(PretrainedCausalHubertSize), default="base-conv-encoder")
     parser.add_argument("-c", "--chunk-size", type=int, default=16000 // 10)
     parser.add_argument("-n", "--num-chunks", type=int, default=50 * 10)
     args = parser.parse_args()
