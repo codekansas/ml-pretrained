@@ -15,7 +15,7 @@ to process chunks of audio as they come in.
 
     from pretrained.causal_hubert import pretrained_causal_hubert
 
-    model = pretrained_causal_hubert("base-empty")
+    model = pretrained_causal_hubert("base-conv-encoder")
     state = None
 
     for waveform_chunk in waveform_chunks:
@@ -25,7 +25,6 @@ to process chunks of audio as they come in.
 import argparse
 import logging
 import math
-import warnings
 from typing import Literal, NamedTuple, cast, get_args
 
 import safetensors.torch
@@ -45,7 +44,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONV_DIM: tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
 DEFAULT_CONV_STRIDE: tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
 
-PretrainedCausalHubertSize = Literal["base-empty"]
+PretrainedCausalHubertSize = Literal["base-conv-encoder"]
 
 
 def cast_pretrained_causal_hubert_key(s: str) -> PretrainedCausalHubertSize:
@@ -385,23 +384,20 @@ def _load_pretrained_causal_hubert(
 
 def pretrained_causal_hubert(size: PretrainedCausalHubertSize, load_weights: bool = True) -> CausalHubert:
     match size:
-        case "base-empty":
-            if load_weights:
-                warnings.warn("No pretrained weights available for base-empty, using random weights")
-
+        case "base-conv-encoder":
             return _load_pretrained_causal_hubert(
                 size=size,
-                ckpt_url="",
-                sha256="",
+                ckpt_url="https://huggingface.co/codekansas/causal-hubert/resolve/main/base-conv-encoder.bin",
+                sha256="ff613b7d2bb02bde015e153c00406acbe67a5d133ace36bafbe55cdf931c1b34",
                 hidden_size=768,
                 dim_feedforward=2048,
                 num_heads=12,
                 num_layers=6,
                 num_hubert_tokens=100,
                 local_attn=32,
-                load_weights=False,
-                feat_extract_norm="group",
-                conv_bias=False,
+                load_weights=load_weights,
+                feat_extract_norm="layer",
+                conv_bias=True,
             )
 
         case _:
@@ -412,7 +408,7 @@ def test_causal_hubert() -> None:
     configure_logging()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-k", "--key", choices=get_args(PretrainedCausalHubertSize), default="base-empty")
+    parser.add_argument("-k", "--key", choices=get_args(PretrainedCausalHubertSize), default="base-conv-encoder")
     parser.add_argument("-c", "--chunk-size", type=int, default=16000 // 10)
     parser.add_argument("-n", "--num-chunks", type=int, default=50 * 10)
     args = parser.parse_args()
