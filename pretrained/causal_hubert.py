@@ -391,6 +391,15 @@ class CausalHubertPredictor(nn.Module):
             attn_states = state.attn_states
         _, tsz = waveform.shape
         tsz_leftover = tsz % self.receptive_field_size
+
+        if tsz_leftover == tsz:
+            state_out = CausalHubertState(
+                offset=state.offset,
+                waveform_leftover=waveform,
+                attn_states=state.attn_states_out,
+            )
+            return torch.empty((waveform.shape[0], 0), dtype=torch.long, device=waveform.device), state_out
+
         waveform, waveform_leftover = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
 
         x = self.extractor(waveform)
