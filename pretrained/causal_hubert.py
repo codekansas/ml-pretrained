@@ -26,7 +26,6 @@ import argparse
 import logging
 import math
 import sys
-import warnings
 from typing import Literal, NamedTuple, cast, get_args
 
 import safetensors.torch
@@ -46,7 +45,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONV_DIM: tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
 DEFAULT_CONV_STRIDE: tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
 
-PretrainedCausalHubertSize = Literal["base-conv-encoder", "base-linear-encoder-empty"]
+PretrainedCausalHubertSize = Literal["base-conv-encoder", "base-linear-encoder"]
 
 
 def cast_pretrained_causal_hubert_key(s: str) -> PretrainedCausalHubertSize:
@@ -546,14 +545,11 @@ def pretrained_causal_hubert(
                 conv_bias=True,
             )
 
-        case "base-linear-encoder-empty":
-            if load_weights:
-                warnings.warn("No weights available for base-linear-encoder-empty, returning empty model")
-
+        case "base-linear-encoder":
             return _load_pretrained_causal_hubert_linear(
                 size=size,
-                ckpt_url="",
-                sha256="",
+                ckpt_url="https://huggingface.co/codekansas/causal-hubert/resolve/main/base-linear-encoder.bin",
+                sha256="33f0f28da68c36bd8163a12bdf6940d38df36ee5fd45b5b1e4bb74b96c9a17f2",
                 hidden_size=768,
                 dim_feedforward=2048,
                 num_heads=12,
