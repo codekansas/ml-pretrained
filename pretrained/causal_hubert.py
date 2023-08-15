@@ -239,17 +239,12 @@ class SelfAttention(nn.Module):
         return x, states_out
 
 
-class CausalHubert(nn.Module):
+class ConvExtractor(nn.Module):
     __constants__ = ["receptive_field_size"]
 
     def __init__(
         self,
         hidden_size: int,
-        num_heads: int,
-        dim_feedforward: int,
-        num_layers: int,
-        num_hubert_tokens: int,
-        local_attn: int,
         conv_dim: tuple[int, ...] = DEFAULT_CONV_DIM,
         conv_stride: tuple[int, ...] = DEFAULT_CONV_STRIDE,
         conv_bias: bool = True,
@@ -258,13 +253,10 @@ class CausalHubert(nn.Module):
         layer_norm_eps: float = 1e-5,
         feat_proj_dropout: float = 0.0,
         feat_proj_layer_norm: bool = True,
-        max_tsz: int = 2048,
     ) -> None:
         super().__init__()
 
         self.receptive_field_size = math.prod(conv_stride)
-
-        self.hubert_pos_embs = get_positional_embeddings(max_tsz, hidden_size, "rotary")
 
         self.hubert_extractor = HubertFeatureEncoder(
             conv_dim=conv_dim,
@@ -283,65 +275,19 @@ class CausalHubert(nn.Module):
             feat_proj_layer_norm=feat_proj_layer_norm,
         )
 
-        self.hubert_transformer = SelfAttention(
-            hidden_size=hidden_size,
-            num_heads=num_heads,
-            dim_feedforward=dim_feedforward,
-            num_layers=num_layers,
-            local_attn=local_attn,
-            max_tsz=max_tsz,
-        )
-
-        self.token_projector = nn.Linear(hidden_size, num_hubert_tokens)
-
-    def forward(self, waveform: Tensor, state: CausalHubertState | None = None) -> tuple[Tensor, CausalHubertState]:
-        # Prepends the leftover waveform from the previous call.
-        attn_states: list[SelfAttentionState] | None = None
-        if state is not None:
-            waveform = torch.cat([state.waveform_leftover, waveform], dim=1)
-            attn_states = state.attn_states
-        _, tsz = waveform.shape
-        tsz_leftover = tsz % self.receptive_field_size
-        waveform, waveform_leftover = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
-
-        # Runs the extractor on the waveform.
+    def forward(self, waveform: Tensor) -> Tensor:
         x = self.hubert_extractor(waveform).transpose(1, 2)
         x = self.hubert_projector(x)
-
-        # Adds the positional embeddings.
-        offset = 0 if state is None else state.offset
-        x = self.hubert_pos_embs(x, offset=offset)
-        offset += x.shape[1]
-
-        # Runs the transformer.
-        x, attn_states_out = self.hubert_transformer(x, attn_states)
-
-        # Predicts the output tokens.
-        x = self.token_projector(x)
-
-        # Gets the new state.
-        state_out = CausalHubertState(
-            offset=offset,
-            waveform_leftover=waveform_leftover,
-            attn_states=attn_states_out,
-        )
-
-        return x, state_out
+        return x
 
 
-class CausalHubertLinear(nn.Module):
+class LinearExtractor(nn.Module):
     __constants__ = ["receptive_field_size"]
 
     def __init__(
         self,
         hidden_size: int,
-        num_heads: int,
-        dim_feedforward: int,
-        num_layers: int,
-        num_hubert_tokens: int,
-        local_attn: int,
-        receptive_field_size: int = 320,
-        max_tsz: int = 2048,
+        receptive_field_size: int,
     ) -> None:
         super().__init__()
 
@@ -352,7 +298,32 @@ class CausalHubertLinear(nn.Module):
             out_features=hidden_size,
         )
 
+    def forward(self, waveform: Tensor) -> Tensor:
+        x = waveform.unflatten(1, (-1, self.receptive_field_size))
+        x = self.extractor(x)
+        return x
+
+
+class CausalHubert(nn.Module):
+    __constants__ = ["receptive_field_size"]
+
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        dim_feedforward: int,
+        num_layers: int,
+        num_hubert_tokens: int,
+        local_attn: int,
+        extractor: ConvExtractor | LinearExtractor,
+        max_tsz: int = 2048,
+    ) -> None:
+        super().__init__()
+
         self.hubert_pos_embs = get_positional_embeddings(max_tsz, hidden_size, "rotary")
+
+        self.extractor = extractor
+        self.receptive_field_size = extractor.receptive_field_size
 
         self.hubert_transformer = SelfAttention(
             hidden_size=hidden_size,
@@ -375,8 +346,7 @@ class CausalHubertLinear(nn.Module):
         tsz_leftover = tsz % self.receptive_field_size
         waveform, waveform_leftover = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
 
-        x = waveform.unflatten(1, (-1, self.receptive_field_size))
-        x = self.extractor(x)
+        x = self.extractor(waveform)
 
         # Adds the positional embeddings.
         offset = 0 if state is None else state.offset
@@ -428,14 +398,17 @@ def _load_pretrained_causal_hubert(
             num_layers=num_layers,
             num_hubert_tokens=num_hubert_tokens,
             local_attn=local_attn,
-            conv_dim=conv_dim,
-            conv_stride=conv_stride,
-            conv_bias=conv_bias,
-            feat_extract_norm=feat_extract_norm,
-            feat_extract_activation=feat_extract_activation,
-            layer_norm_eps=layer_norm_eps,
-            feat_proj_dropout=feat_proj_dropout,
-            feat_proj_layer_norm=feat_proj_layer_norm,
+            extractor=ConvExtractor(
+                hidden_size=hidden_size,
+                conv_dim=conv_dim,
+                conv_stride=conv_stride,
+                conv_bias=conv_bias,
+                feat_extract_norm=feat_extract_norm,
+                feat_extract_activation=feat_extract_activation,
+                layer_norm_eps=layer_norm_eps,
+                feat_proj_dropout=feat_proj_dropout,
+                feat_proj_layer_norm=feat_proj_layer_norm,
+            ),
             max_tsz=max_tsz,
         )
 
@@ -466,16 +439,19 @@ def _load_pretrained_causal_hubert_linear(
     load_weights: bool = True,
     receptive_field_size: int = 320,
     max_tsz: int = 2048,
-) -> CausalHubertLinear:
+) -> CausalHubert:
     with Timer("building empty model", spinner=True):
-        model = CausalHubertLinear(
+        model = CausalHubert(
             hidden_size=hidden_size,
             num_heads=num_heads,
             dim_feedforward=dim_feedforward,
             num_layers=num_layers,
             num_hubert_tokens=num_hubert_tokens,
             local_attn=local_attn,
-            receptive_field_size=receptive_field_size,
+            extractor=LinearExtractor(
+                hidden_size=hidden_size,
+                receptive_field_size=receptive_field_size,
+            ),
             max_tsz=max_tsz,
         )
 
@@ -496,13 +472,13 @@ def _load_pretrained_causal_hubert_linear(
 def pretrained_causal_hubert(
     size: PretrainedCausalHubertSize,
     load_weights: bool = True,
-) -> CausalHubert | CausalHubertLinear:
+) -> CausalHubert:
     match size:
         case "base-conv-encoder":
             return _load_pretrained_causal_hubert(
                 size=size,
                 ckpt_url="https://huggingface.co/codekansas/causal-hubert/resolve/main/base-conv-encoder.bin",
-                sha256="ff613b7d2bb02bde015e153c00406acbe67a5d133ace36bafbe55cdf931c1b34",
+                sha256="b3af6671bf6288d9c8f8a5fd141ebe238feb66a7df1cc4115a7bb746be4a3c4e",
                 hidden_size=768,
                 dim_feedforward=2048,
                 num_heads=12,
