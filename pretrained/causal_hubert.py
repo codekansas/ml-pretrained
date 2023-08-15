@@ -33,7 +33,7 @@ import safetensors.torch
 import torch
 import torch.nn.functional as F
 from ml.models.activations import ActivationType
-from ml.models.embeddings import get_positional_embeddings
+from ml.models.embeddings import get_positional_embeddings, rotary_embeddings
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
@@ -369,6 +369,52 @@ class CausalHubert(nn.Module):
 
         return x, state_out
 
+    def predictor(self) -> "CausalHubertPredictor":
+        return CausalHubertPredictor(self)
+
+
+class CausalHubertPredictor(nn.Module):
+    def __init__(self, hubert: CausalHubert) -> None:
+        super().__init__()
+
+        self.extractor = hubert.extractor
+        self.receptive_field_size = hubert.receptive_field_size
+
+        self.hubert_transformer = hubert.hubert_transformer
+        self.token_projector = hubert.token_projector
+
+    def forward(self, waveform: Tensor, state: CausalHubertState | None = None) -> tuple[Tensor, CausalHubertState]:
+        # Prepends the leftover waveform from the previous call.
+        attn_states: list[SelfAttentionState] | None = None
+        if state is not None:
+            waveform = torch.cat([state.waveform_leftover, waveform], dim=1)
+            attn_states = state.attn_states
+        _, tsz = waveform.shape
+        tsz_leftover = tsz % self.receptive_field_size
+        waveform, waveform_leftover = waveform[:, : tsz - tsz_leftover], waveform[:, tsz - tsz_leftover :]
+
+        x = self.extractor(waveform)
+
+        # Adds the positional embeddings.
+        offset = 0 if state is None else state.offset
+        x = rotary_embeddings(x, offset=offset)
+        offset += x.shape[1]
+
+        # Runs the transformer.
+        x, attn_states_out = self.hubert_transformer(x, attn_states)
+
+        # Predicts the output tokens.
+        x = self.token_projector(x).argmax(-1)
+
+        # Gets the new state.
+        state_out = CausalHubertState(
+            offset=offset,
+            waveform_leftover=waveform_leftover,
+            attn_states=attn_states_out,
+        )
+
+        return x, state_out
+
 
 def _load_pretrained_causal_hubert(
     size: PretrainedCausalHubertSize,
@@ -522,6 +568,7 @@ def test_causal_hubert() -> None:
     args = parser.parse_args()
 
     model = pretrained_causal_hubert(args.key)
+    predictor = model.predictor()
     state: CausalHubertState | None = None
 
     import sounddevice as sd  # type: ignore[import]
@@ -532,8 +579,8 @@ def test_causal_hubert() -> None:
         for _ in range(args.num_chunks):
             data, _ = stream.read(args.chunk_size)
             waveform = torch.from_numpy(data.reshape(1, -1)).float()
-            logits, state = model(waveform, state)
-            for code in logits.argmax(-1).squeeze(0).cpu().tolist():
+            codes, state = predictor(waveform, state)
+            for code in codes.squeeze(0).cpu().tolist():
                 i += 1
                 s = f"{code}"
                 sys.stdout.write(f"{s:>4s}")
