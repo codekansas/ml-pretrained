@@ -234,7 +234,7 @@ class SelfAttention(nn.Module):
     ) -> tuple[Tensor, list[SelfAttentionState]]:
         states_out: list[SelfAttentionState] = []
         for i, layer in enumerate(self.layers):
-            x, state = layer(x, self.mask, None if states is None else states[i])
+            x, state = layer(x, self.mask, None if states is None or len(states) == 0 else states[i])
             states_out.append(state)
         return x, states_out
 
@@ -393,9 +393,9 @@ class CausalHubertPredictor(nn.Module):
 
         if tsz_leftover == tsz:
             state_out = CausalHubertState(
-                offset=state.offset,
+                offset=0 if state is None else state.offset,
                 waveform_leftover=waveform,
-                attn_states=state.attn_states_out,
+                attn_states=[] if state is None else state.attn_states,
             )
             return torch.empty((waveform.shape[0], 0), dtype=torch.long, device=waveform.device), state_out
 
