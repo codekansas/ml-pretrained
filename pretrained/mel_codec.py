@@ -424,7 +424,7 @@ def test_codec_adhoc() -> None:
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
 
-    # Loads the HiFi-GAN model.
+    # Loads the pretrained model.
     model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
     tokens = quantizer(audio)
