@@ -22,6 +22,7 @@ to process chunks of audio as they come in.
         tokens, state = model(waveform_chunk, state)
 """
 
+import sys
 import argparse
 import logging
 import math
@@ -526,11 +527,14 @@ def test_causal_hubert() -> None:
     import sounddevice as sd  # type: ignore[import]
 
     with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
+        sys.stdout.write("Codes: ")
         for _ in range(args.num_chunks):
-            data, overflowed = stream.read(args.chunk_size)
+            data, _ = stream.read(args.chunk_size)
             waveform = torch.from_numpy(data.reshape(1, -1)).float()
             logits, state = model(waveform, state)
-            logger.info("Read: %s (overflowed: %s)", logits.argmax(-1).squeeze(0).cpu().tolist(), overflowed)
+            for code in logits.argmax(-1).squeeze(0).cpu().tolist():
+                sys.stdout.write(f"{code} ")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":

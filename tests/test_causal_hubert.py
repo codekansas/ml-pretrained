@@ -6,7 +6,7 @@ batched version of the model.
 
 import torch
 
-from pretrained.causal_hubert import CausalHubert, CausalHubertState
+from pretrained.causal_hubert import CausalHubert, CausalHubertState, ConvExtractor
 
 
 def test_causal_hubert_streamer_matches_training() -> None:
@@ -18,6 +18,7 @@ def test_causal_hubert_streamer_matches_training() -> None:
         dim_feedforward=128,
         num_layers=2,
         num_hubert_tokens=10,
+        extractor=ConvExtractor(hidden_size=32),
         local_attn=4,
     )
     model.double()
