@@ -22,10 +22,10 @@ to process chunks of audio as they come in.
         tokens, state = model(waveform_chunk, state)
 """
 
-import sys
 import argparse
 import logging
 import math
+import sys
 import warnings
 from typing import Literal, NamedTuple, cast, get_args
 
