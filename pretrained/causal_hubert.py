@@ -527,13 +527,18 @@ def test_causal_hubert() -> None:
     import sounddevice as sd  # type: ignore[import]
 
     with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
-        sys.stdout.write("Codes: ")
+        sys.stdout.write("Codes:\n")
+        i = 0
         for _ in range(args.num_chunks):
             data, _ = stream.read(args.chunk_size)
             waveform = torch.from_numpy(data.reshape(1, -1)).float()
             logits, state = model(waveform, state)
             for code in logits.argmax(-1).squeeze(0).cpu().tolist():
-                sys.stdout.write(f"{code} ")
+                i += 1
+                s = f"{code}"
+                sys.stdout.write(f"{s:>4s}")
+                if i % 20 == 0:
+                    sys.stdout.write("\n")
             sys.stdout.flush()
 
 
