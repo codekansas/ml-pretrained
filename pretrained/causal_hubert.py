@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONV_DIM: tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
 DEFAULT_CONV_STRIDE: tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
 
-PretrainedCausalHubertSize = Literal["base-conv-encoder", "base-linear-encoder"]
+PretrainedCausalHubertSize = Literal["base-conv-encoder", "base-linear-encoder", "base-linear-encoder-better"]
 
 
 def cast_pretrained_causal_hubert_key(s: str) -> PretrainedCausalHubertSize:
@@ -556,7 +556,21 @@ def pretrained_causal_hubert(
                 num_layers=6,
                 num_hubert_tokens=100,
                 local_attn=32,
-                load_weights=False,
+                load_weights=load_weights,
+            )
+
+        case "base-linear-encoder-better":
+            return _load_pretrained_causal_hubert_linear(
+                size=size,
+                ckpt_url="https://huggingface.co/codekansas/causal-hubert/resolve/main/base-linear-encoder-better.bin",
+                sha256="e6d7d12e6f87f63acad6aa8f63bac1f6d80bd925402f8b95d185740a0bc00ab3",
+                hidden_size=768,
+                num_heads=12,
+                dim_feedforward=2048,
+                num_layers=6,
+                num_hubert_tokens=100,
+                local_attn=125,
+                load_weights=load_weights,
             )
 
         case _:
