@@ -32,7 +32,7 @@ from torch import Tensor, nn, optim
 
 logger = logging.getLogger(__name__)
 
-PretrainedWavCodecType = Literal["wav-codec-small"]
+PretrainedWavCodecType = Literal["small", "large"]
 
 RNNClass: type[nn.LSTM] | type[nn.GRU] = nn.LSTM
 RNNState = tuple[Tensor, Tensor]
@@ -235,7 +235,7 @@ def pretrained_wav_codec(key: str | PretrainedWavCodecType, load_weights: bool =
     key = cast_pretrained_mel_codec_type(key)
 
     match key:
-        case "wav-codec-small":
+        case "small":
             return _load_pretrained_mel_codec(
                 model=WavCodec(
                     stride_length=320,
@@ -245,8 +245,22 @@ def pretrained_wav_codec(key: str | PretrainedWavCodecType, load_weights: bool =
                     num_quantizers=8,
                 ),
                 key=key,
-                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/wav-codec-small.pt",
-                sha256="2399d692805b76bf4f91c9a8ff984031f146b59c8750ac2ebc4d9cf0aa0fa835",
+                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/small.bin",
+                sha256="4e648c8dfb4045f26d25267410e6b1568aad3528ab3a97736a1d42d5e4ae57d0",
+                load_weights=load_weights,
+            )
+        case "large":
+            return _load_pretrained_mel_codec(
+                model=WavCodec(
+                    stride_length=320,
+                    hidden_size=1024,
+                    num_layers=4,
+                    codebook_size=512,
+                    num_quantizers=8,
+                ),
+                key=key,
+                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/large.bin",
+                sha256="01adefc956a91befdefe386ec0cac4086c54b16ca66a4684617522035aed585e",
                 load_weights=load_weights,
             )
         case _:
@@ -259,7 +273,7 @@ def test_codec_adhoc() -> None:
     parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
-    parser.add_argument("-k", "--key", choices=get_args(PretrainedWavCodecType), default="wav-codec-small")
+    parser.add_argument("-k", "--key", choices=get_args(PretrainedWavCodecType), default="large")
     args = parser.parse_args()
 
     # Loads the audio file.
