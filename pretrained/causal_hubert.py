@@ -293,9 +293,13 @@ class LinearExtractor(nn.Module):
 
         self.receptive_field_size = receptive_field_size
 
-        self.extractor = nn.Linear(
-            in_features=receptive_field_size,
-            out_features=hidden_size,
+        self.extractor = nn.Sequential(
+            nn.Linear(
+                in_features=receptive_field_size,
+                out_features=hidden_size,
+            ),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
         )
 
     def forward(self, waveform: Tensor) -> Tensor:
