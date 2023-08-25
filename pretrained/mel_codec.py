@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
-import safetensors.torch
+import safetensors.torch as st
 import torch
 import torchaudio
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
@@ -31,7 +31,7 @@ from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
 
-from pretrained.vocoder.hifigan import AudioToHifiGanMels, pretrained_hifigan
+from pretrained.vocoder.hifigan import HiFiGAN, PretrainedHiFiGANType, pretrained_hifigan
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class MelCodecConfig:
     num_quantizers: int
     encoder_causal: bool
     max_tsz: int
+    hifigan_key: PretrainedHiFiGANType
 
 
 class MelCodec(nn.Module):
@@ -87,6 +88,7 @@ class MelCodec(nn.Module):
         num_layers: int,
         codebook_size: int,
         num_quantizers: int,
+        hifigan_key: PretrainedHiFiGANType,
         encoder_causal: bool = False,
         max_tsz: int = 2048,
     ) -> None:
@@ -95,6 +97,7 @@ class MelCodec(nn.Module):
         self.codebook_size = codebook_size
         self.num_mels = num_mels
         self.encoder_causal = encoder_causal
+        self.hifigan_key = hifigan_key
 
         self.rvq = ResidualVectorQuantization(
             VectorQuantization(
@@ -223,16 +226,16 @@ class MelCodec(nn.Module):
         return x
 
     def quantizer(self) -> "MelCodecQuantizer":
-        return MelCodecQuantizer(self)
+        return MelCodecQuantizer(self, pretrained_hifigan(self.hifigan_key))
 
     def dequantizer(self) -> "MelCodecDequantizer":
-        return MelCodecDequantizer(self)
+        return MelCodecDequantizer(self, pretrained_hifigan(self.hifigan_key))
 
 
 class MelCodecQuantizer(nn.Module):
     __constants__ = ["codebook_size", "num_mels", "encoder_causal"]
 
-    def __init__(self, codec: MelCodec) -> None:
+    def __init__(self, codec: MelCodec, hifigan: HiFiGAN) -> None:
         super().__init__()
 
         self.codebook_size = codec.codebook_size
@@ -248,7 +251,7 @@ class MelCodecQuantizer(nn.Module):
 
         self.register_buffer("mask", codec.mask)
 
-        self.mel_fn = AudioToHifiGanMels()
+        self.mel_fn = hifigan.audio_to_mels()
 
     mask: Tensor
 
@@ -294,7 +297,7 @@ class MelCodecQuantizer(nn.Module):
 
 
 class MelCodecDequantizer(nn.Module):
-    def __init__(self, codec: MelCodec) -> None:
+    def __init__(self, codec: MelCodec, hifigan: HiFiGAN) -> None:
         super().__init__()
 
         self.codebook_size = codec.codebook_size
@@ -311,7 +314,7 @@ class MelCodecDequantizer(nn.Module):
 
         self.register_buffer("mask", codec.mask)
 
-        self.hifigan = pretrained_hifigan()
+        self.hifigan = hifigan
 
     mask: Tensor
 
@@ -367,6 +370,7 @@ def _load_pretrained_mel_codec(
         codebook_size=config.codebook_size,
         num_quantizers=config.num_quantizers,
         encoder_causal=config.encoder_causal,
+        hifigan_key=config.hifigan_key,
     )
 
     if load_weights:
@@ -376,17 +380,23 @@ def _load_pretrained_mel_codec(
             model_path = ensure_downloaded(ckpt_url, "codec", model_fname, sha256=sha256)
 
         with Timer("loading checkpoint", spinner=True):
-            ckpt = safetensors.torch.load_file(model_path)
+            ckpt = st.load_file(model_path)
             model.load_state_dict(ckpt)
 
     return model
 
 
-def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
+def pretrained_mel_codec(
+    key: str | PretrainedMelCodecType,
+    load_weights: bool = True,
+    max_tsz: int = 2048,
+) -> MelCodec:
+    key = cast_pretrained_mel_codec_type(key)
+
     match key:
         case "librivox":
             return _load_pretrained_mel_codec(
-                cast_pretrained_mel_codec_type(key),
+                key,
                 ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/librivox.bin",
                 sha256="7d884aebaf4ac1f56fb64191121a253a5f3446a1e4e68ad20ff94905158bdab3",
                 load_weights=load_weights,
@@ -400,8 +410,10 @@ def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool =
                     num_quantizers=8,
                     encoder_causal=False,
                     max_tsz=max_tsz,
+                    hifigan_key="22050hz",
                 ),
             )
+
         case _:
             raise ValueError(f"Unknown codec key: {key}")
 
@@ -417,28 +429,30 @@ def test_codec_adhoc() -> None:
     dev = detect_device()
     mul = 10 if dev._device.type == "cuda" else 1
 
+    # Loads the pretrained model.
+    model = pretrained_mel_codec("librivox")
+    quantizer, dequantizer = model.quantizer(), model.dequantizer()
+    dev.module_to(quantizer)
+    dev.module_to(dequantizer)
+
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
     audio = audio[:, : sr * mul]
-    if sr != 22050:
-        audio = torchaudio.functional.resample(audio, sr, 22050)
+    if sr != dequantizer.hifigan.sampling_rate:
+        audio = torchaudio.functional.resample(audio, sr, dequantizer.hifigan.sampling_rate)
 
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
     audio = dev.tensor_to(audio)
 
-    # Loads the pretrained model.
-    model = pretrained_mel_codec("librivox")
-    quantizer, dequantizer = model.quantizer(), model.dequantizer()
-    dev.module_to(quantizer)
-    dev.module_to(dequantizer)
+    # Runs the model.
     tokens = quantizer(audio)
     audio = dequantizer(tokens)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, audio.cpu(), 22050)
+    torchaudio.save(args.output_file, audio.cpu(), dequantizer.hifigan.sampling_rate)
 
     logger.info("Saved %s", args.output_file)
 

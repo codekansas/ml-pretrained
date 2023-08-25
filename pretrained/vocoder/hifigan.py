@@ -12,9 +12,10 @@ synthesize audio.
 
 import argparse
 import logging
-from typing import TypeVar, cast
+from typing import Literal, cast, get_args
 
 import numpy as np
+import safetensors.torch as st
 import torch
 import torch.nn.functional as F
 import torchaudio
@@ -28,9 +29,13 @@ from torch.nn.utils import remove_weight_norm, weight_norm
 
 logger = logging.getLogger(__name__)
 
-HIFIGAN_CKPT_URL = "https://huggingface.co/jaketae/hifigan-lj-v1/resolve/main/pytorch_model.bin"
+PretrainedHiFiGANType = Literal["16000hz", "22050hz"]
 
-T = TypeVar("T")
+
+def cast_pretrained_hifigan_type(s: str) -> PretrainedHiFiGANType:
+    if s not in get_args(PretrainedHiFiGANType):
+        raise KeyError(f"Invalid HiFi-GAN type: {s} Expected one of: {get_args(PretrainedHiFiGANType)}")
+    return cast(PretrainedHiFiGANType, s)
 
 
 get = lambda x, i: None if x is None else x[i]  # noqa: E731
@@ -165,31 +170,34 @@ class HiFiGAN(nn.Module):
     """Defines a HiFi-GAN model.
 
     Parameters:
+        sampling_rate: The sampling rate of the model.
+        model_in_dim: The input dimension of the model.
+        hop_size: The hop size of the model.
+        upsample_kernel_sizes: The kernel sizes of the upsampling layers.
+        upsample_rates: The upsample rates of each layer.
         resblock_kernel_sizes: The kernel sizes of the ResBlocks.
         resblock_dilation_sizes: The dilation sizes of the ResBlocks.
-        upsample_rates: The upsample rates of each layer.
         upsample_initial_channel: The initial channel of the upsampling layers.
-        upsample_kernel_sizes: The kernel sizes of the upsampling layers.
-        model_in_dim: The input dimension of the model.
-        sampling_rate: The sampling rate of the model.
         lrelu_slope: The slope of the leaky ReLU.
     """
 
     def __init__(
         self,
+        sampling_rate: int,
+        model_in_dim: int,
+        hop_size: int,
+        upsample_kernel_sizes: list[int],
+        upsample_rates: list[int],
         resblock_kernel_sizes: list[int] = [3, 7, 11],
         resblock_dilation_sizes: list[tuple[int, int, int]] = [(1, 3, 5), (1, 3, 5), (1, 3, 5)],
-        upsample_rates: list[int] = [8, 8, 2, 2],
         upsample_initial_channel: int = 512,
-        upsample_kernel_sizes: list[int] = [16, 16, 4, 4],
-        model_in_dim: int = 80,
-        sampling_rate: int = 22050,
         lrelu_slope: float = 0.1,
     ) -> None:
         super().__init__()
 
         self.model_in_dim = model_in_dim
         self.sampling_rate = sampling_rate
+        self.hop_size = hop_size
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
         self.lrelu_slope = lrelu_slope
@@ -268,10 +276,23 @@ class HiFiGAN(nn.Module):
         remove_weight_norm(self.conv_pre)
         remove_weight_norm(self.conv_post)
 
+    def audio_to_mels(self) -> "AudioToHifiGanMels":
+        return AudioToHifiGanMels(
+            sampling_rate=self.sampling_rate,
+            num_mels=self.model_in_dim,
+            n_fft=1024,
+            win_size=1024,
+            hop_size=self.hop_size,
+            fmin=0,
+            fmax=8000,
+        )
+
 
 def _load_hifigan_weights(
+    key: PretrainedHiFiGANType,
     model: HiFiGAN,
     url: str,
+    sha256: str,
     load_weights: bool = True,
     device: torch.device | None = None,
 ) -> HiFiGAN:
@@ -279,31 +300,63 @@ def _load_hifigan_weights(
         return model
 
     with Timer("downloading checkpoint"):
-        model_path = ensure_downloaded(url, "hifigan", "weights_hifigan.pth")
+        model_path = ensure_downloaded(url, "hifigan", f"{key}.bin", sha256=sha256)
 
     with Timer("loading checkpoint", spinner=True):
         if device is None:
             device = torch.device("cpu")
-        ckpt = torch.load(model_path, map_location=device)
+        ckpt = st.load_file(model_path)
         model.to(device)
         model.load_state_dict(ckpt)
 
     return model
 
 
-def pretrained_hifigan(*, pretrained: bool = True, keep_weight_norm: bool = False) -> HiFiGAN:
+def pretrained_hifigan(
+    key: str | PretrainedHiFiGANType,
+    *,
+    pretrained: bool = True,
+    keep_weight_norm: bool = False,
+) -> HiFiGAN:
     """Loads the pretrained HiFi-GAN model.
 
     Args:
+        key: The key of the pretrained model.
         pretrained: Whether to load the pretrained weights.
         keep_weight_norm: Whether to keep the weight norm.
 
     Returns:
         The pretrained HiFi-GAN model.
     """
+    key = cast_pretrained_hifigan_type(key)
     with Timer("initializing model", spinner=True):
-        model = HiFiGAN()
-    model = _load_hifigan_weights(model, HIFIGAN_CKPT_URL, pretrained)
+        match key:
+            case "16000hz":
+                model = HiFiGAN(
+                    sampling_rate=16000,
+                    model_in_dim=128,
+                    hop_size=160,
+                    upsample_kernel_sizes=[20, 8, 4, 4],
+                    upsample_rates=[10, 4, 2, 2],
+                )
+                url = "https://huggingface.co/codekansas/hifigan/resolve/main/hifigan_16000hz.bin"
+                sha256 = "4693bd59cb1653635d902c8a34064c7628d9472637c71a71898911c59a06aa51"
+
+            case "22050hz":
+                model = HiFiGAN(
+                    sampling_rate=22050,
+                    model_in_dim=80,
+                    hop_size=256,
+                    upsample_kernel_sizes=[16, 16, 4, 4],
+                    upsample_rates=[8, 8, 2, 2],
+                )
+                url = "https://huggingface.co/codekansas/hifigan/resolve/main/hifigan_22050hz.bin"
+                sha256 = "79cbede45d1be8e5700f0326a3c796c311ee7b04cf1fd8994a35418eecddf941"
+
+            case _:
+                raise ValueError(f"Invalid HiFi-GAN type: {key}")
+
+    model = _load_hifigan_weights(key, model, url, sha256, pretrained)
     if not keep_weight_norm:
         model.remove_weight_norm()
     return model
@@ -328,11 +381,11 @@ class AudioToHifiGanMels(nn.Module):
 
     def __init__(
         self,
-        sampling_rate: int = 22050,
-        num_mels: int = 80,
-        n_fft: int = 1024,
-        win_size: int = 1024,
-        hop_size: int = 256,
+        sampling_rate: int,
+        num_mels: int,
+        n_fft: int,
+        win_size: int,
+        hop_size: int,
         fmin: int = 0,
         fmax: int = 8000,
     ) -> None:
@@ -431,30 +484,31 @@ def test_mel_to_audio_adhoc() -> None:
     configure_logging()
 
     parser = argparse.ArgumentParser(description="Runs adhoc test of mel to audio conversion")
+    parser.add_argument("key", choices=get_args(PretrainedHiFiGANType), help="The key of the pretrained model")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
 
     dev = detect_device()
 
+    # Loads the HiFi-GAN model.
+    model = pretrained_hifigan(args.key, pretrained=True)
+    dev.module_to(model)
+
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
     audio = audio[:, : sr * 10]
-    if sr != 22050:
-        audio = torchaudio.functional.resample(audio, sr, 22050)
+    if sr != model.sampling_rate:
+        audio = torchaudio.functional.resample(audio, sr, model.sampling_rate)
 
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
     audio = dev.tensor_to(audio)
 
-    # Loads the HiFi-GAN model.
-    model = pretrained_hifigan(pretrained=True)
-    dev.module_to(model)
-
     # Converts the audio to mels.
-    audio_to_mels = AudioToHifiGanMels()
+    audio_to_mels = model.audio_to_mels()
     dev.module_to(audio_to_mels)
     mels = audio_to_mels.wav_to_mels(audio)
 
@@ -462,7 +516,7 @@ def test_mel_to_audio_adhoc() -> None:
     audio = model.infer(mels).squeeze(0)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, audio.cpu(), 22050)
+    torchaudio.save(args.output_file, audio.cpu(), model.sampling_rate)
 
     logger.info("Saved %s", args.output_file)
 
