@@ -382,9 +382,7 @@ def _load_pretrained_mel_codec(
     return model
 
 
-def pretrained_mel_codec(
-    key: str | PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048
-) -> MelCodec:
+def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
     match key:
         case "librivox":
             return _load_pretrained_mel_codec(
