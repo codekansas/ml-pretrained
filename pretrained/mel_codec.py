@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
 import safetensors.torch
+from ml.utils.device.auto import detect_device
 import torch
 import torchaudio
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
@@ -413,6 +414,8 @@ def test_codec_adhoc() -> None:
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
 
+    dev = detect_device()
+
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
@@ -423,10 +426,13 @@ def test_codec_adhoc() -> None:
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
+    audio = dev.tensor_to(audio)
 
     # Loads the pretrained model.
     model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
+    dev.module_to(quantizer)
+    dev.module_to(dequantizer)
     tokens = quantizer(audio)
     audio = dequantizer(tokens)
 

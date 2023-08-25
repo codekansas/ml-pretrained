@@ -20,6 +20,7 @@ import torch.nn.functional as F
 import torchaudio
 from ml.models.modules import StreamingConv1d, StreamingConvTranspose1d, streaming_add
 from ml.utils.checkpoint import ensure_downloaded
+from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -215,7 +216,7 @@ class HiFiGAN(nn.Module):
                 self.resblocks.append(ResBlock(ch, k, d, lrelu_slope))
 
         self.conv_post = weight_norm(StreamingConv1d(ch, 1, 7, 1, padding=3))
-        self.ups.apply(init_hifigan_weights)
+        cast(nn.ModuleList, self.ups).apply(init_hifigan_weights)
         self.conv_post.apply(init_hifigan_weights)
 
     def forward(self, x: Tensor, state: HiFiGANState | None = None) -> tuple[Tensor, HiFiGANState]:
@@ -290,11 +291,12 @@ def _load_hifigan_weights(
     return model
 
 
-def pretrained_hifigan(*, pretrained: bool = True) -> HiFiGAN:
+def pretrained_hifigan(*, pretrained: bool = True, keep_weight_norm: bool = False) -> HiFiGAN:
     """Loads the pretrained HiFi-GAN model.
 
     Args:
         pretrained: Whether to load the pretrained weights.
+        keep_weight_norm: Whether to keep the weight norm.
 
     Returns:
         The pretrained HiFi-GAN model.
@@ -302,6 +304,8 @@ def pretrained_hifigan(*, pretrained: bool = True) -> HiFiGAN:
     with Timer("initializing model", spinner=True):
         model = HiFiGAN()
     model = _load_hifigan_weights(model, HIFIGAN_CKPT_URL, pretrained)
+    if not keep_weight_norm:
+        model.remove_weight_norm()
     return model
 
 
@@ -392,11 +396,7 @@ class AudioToHifiGanMels(nn.Module):
     mel_basis: Tensor
     hann_window: Tensor
 
-    def wav_to_mels(
-        self,
-        y: Tensor,
-        center: bool = False,
-    ) -> Tensor:
+    def wav_to_mels(self, y: Tensor, center: bool = False) -> Tensor:
         ymin, ymax = torch.min(y), torch.max(y)
         if ymin < -1.0:
             logger.warning("min value is %.2g", ymin)
@@ -435,6 +435,8 @@ def test_mel_to_audio_adhoc() -> None:
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
 
+    dev = detect_device()
+
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
@@ -445,17 +447,19 @@ def test_mel_to_audio_adhoc() -> None:
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
+    audio = dev.tensor_to(audio)
 
     # Loads the HiFi-GAN model.
     model = pretrained_hifigan(pretrained=True)
+    dev.module_to(model)
 
     # Converts the audio to mels.
     audio_to_mels = AudioToHifiGanMels()
+    dev.module_to(audio_to_mels)
     mels = audio_to_mels.wav_to_mels(audio)
 
     # Converts the mels back to audio.
-    audio, _ = model(mels)
-    audio = audio.squeeze(0)
+    audio = model.infer(mels).squeeze(0).cpu()
 
     # Saves the audio.
     torchaudio.save(args.output_file, audio, 22050)
