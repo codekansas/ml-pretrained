@@ -12,16 +12,15 @@ synthesize audio.
 
 import argparse
 import logging
-from dataclasses import dataclass
 from typing import TypeVar, cast
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
-from ml.core.config import conf_field
-from ml.models.lora import SupportedModule as LoraModule, maybe_lora
+from ml.models.modules import StreamingConv1d, StreamingConvTranspose1d, streaming_add
 from ml.utils.checkpoint import ensure_downloaded
+from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -31,33 +30,27 @@ logger = logging.getLogger(__name__)
 
 HIFIGAN_CKPT_URL = "https://huggingface.co/jaketae/hifigan-lj-v1/resolve/main/pytorch_model.bin"
 
+T = TypeVar("T")
 
-@dataclass
-class HiFiGANConfig:
-    resblock_kernel_sizes: list[int] = conf_field([3, 7, 11], help="Kernel sizes of ResBlock.")
-    resblock_dilation_sizes: list[tuple[int, int, int]] = conf_field(
-        [(1, 3, 5), (1, 3, 5), (1, 3, 5)],
-        help="Dilation sizes of ResBlock.",
-    )
-    upsample_rates: list[int] = conf_field([8, 8, 2, 2], help="Upsample rates of each layer.")
-    upsample_initial_channel: int = conf_field(512, help="Initial channel of upsampling layers.")
-    upsample_kernel_sizes: list[int] = conf_field([16, 16, 4, 4], help="Kernel sizes of upsampling layers.")
-    model_in_dim: int = conf_field(80, help="Input dimension of model.")
-    sampling_rate: int = conf_field(22050, help="Sampling rate of model.")
-    lrelu_slope: float = conf_field(0.1, help="Slope of leaky relu.")
-    lora_rank: int | None = conf_field(None, help="LoRA rank")
+
+get = lambda x, i: None if x is None else x[i]  # noqa: E731
 
 
 def init_hifigan_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> None:
-    if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
+    if isinstance(m, (nn.Conv1d, nn.ConvTranspose1d, StreamingConv1d, StreamingConvTranspose1d)):
         m.weight.data.normal_(mean, std)
 
 
-T_module = TypeVar("T_module", bound=LoraModule)
-
-
-def lora_weight_norm(module: T_module, lora_rank: int | None) -> T_module:
-    return weight_norm(maybe_lora(module, r=lora_rank))
+StreamingConvState = tuple[Tensor, int]
+StreamingAddState = tuple[Tensor, Tensor]
+ResBlockState = list[tuple[StreamingConvState, StreamingConvState, StreamingAddState]]
+HiFiGANState = tuple[
+    StreamingConvState,
+    list[StreamingConvState],
+    list[list[ResBlockState]],
+    list[list[StreamingAddState]],
+    StreamingConvState,
+]
 
 
 class ResBlock(nn.Module):
@@ -69,7 +62,6 @@ class ResBlock(nn.Module):
         kernel_size: int = 3,
         dilation: tuple[int, int, int] = (1, 3, 5),
         lrelu_slope: float = 0.1,
-        lora_rank: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -78,38 +70,35 @@ class ResBlock(nn.Module):
 
         self.convs1 = nn.ModuleList(
             [
-                lora_weight_norm(
-                    nn.Conv1d(
+                weight_norm(
+                    StreamingConv1d(
                         channels,
                         channels,
-                        kernel_size,
-                        1,
+                        kernel_size=kernel_size,
+                        stride=1,
                         dilation=dilation[0],
                         padding=get_padding(kernel_size, dilation[0]),
-                    ),
-                    lora_rank,
+                    )
                 ),
-                lora_weight_norm(
-                    nn.Conv1d(
+                weight_norm(
+                    StreamingConv1d(
                         channels,
                         channels,
-                        kernel_size,
-                        1,
+                        kernel_size=kernel_size,
+                        stride=1,
                         dilation=dilation[1],
                         padding=get_padding(kernel_size, dilation[1]),
-                    ),
-                    lora_rank,
+                    )
                 ),
-                lora_weight_norm(
-                    nn.Conv1d(
+                weight_norm(
+                    StreamingConv1d(
                         channels,
                         channels,
-                        kernel_size,
-                        1,
+                        kernel_size=kernel_size,
+                        stride=1,
                         dilation=dilation[2],
                         padding=get_padding(kernel_size, dilation[2]),
-                    ),
-                    lora_rank,
+                    )
                 ),
             ]
         )
@@ -117,38 +106,35 @@ class ResBlock(nn.Module):
 
         self.convs2 = nn.ModuleList(
             [
-                lora_weight_norm(
-                    nn.Conv1d(
+                weight_norm(
+                    StreamingConv1d(
                         channels,
                         channels,
-                        kernel_size,
-                        1,
+                        kernel_size=kernel_size,
+                        stride=1,
                         dilation=1,
                         padding=get_padding(kernel_size, 1),
-                    ),
-                    lora_rank,
+                    )
                 ),
-                lora_weight_norm(
-                    nn.Conv1d(
+                weight_norm(
+                    StreamingConv1d(
                         channels,
                         channels,
-                        kernel_size,
-                        1,
+                        kernel_size=kernel_size,
+                        stride=1,
                         dilation=1,
                         padding=get_padding(kernel_size, 1),
-                    ),
-                    lora_rank,
+                    )
                 ),
-                lora_weight_norm(
-                    nn.Conv1d(
+                weight_norm(
+                    StreamingConv1d(
                         channels,
                         channels,
-                        kernel_size,
-                        1,
+                        kernel_size=kernel_size,
+                        stride=1,
                         dilation=1,
                         padding=get_padding(kernel_size, 1),
-                    ),
-                    lora_rank,
+                    )
                 ),
             ]
         )
@@ -156,14 +142,17 @@ class ResBlock(nn.Module):
 
         self.lrelu_slope = lrelu_slope
 
-    def forward(self, x: Tensor) -> Tensor:
-        for c1, c2 in zip(self.convs1, self.convs2):
+    def forward(self, x: Tensor, state: ResBlockState | None) -> tuple[Tensor, ResBlockState]:
+        state_out: ResBlockState = []
+        for i, (c1, c2) in enumerate(zip(self.convs1, self.convs2)):
+            state_in_i = get(state, i)
             xt = F.leaky_relu(x, self.lrelu_slope)
-            xt = c1(xt)
+            xt, s1 = c1(xt, get(state_in_i, 0))
             xt = F.leaky_relu(xt, self.lrelu_slope)
-            xt = c2(xt)
-            x = xt + x
-        return x
+            xt, s2 = c2(xt, get(state_in_i, 1))
+            x, sa = streaming_add(xt, x, get(state_in_i, 2))
+            state_out.append((s1, s2, sa))
+        return x, state_out
 
     def remove_weight_norm(self) -> None:
         for layer in self.convs1:
@@ -173,60 +162,103 @@ class ResBlock(nn.Module):
 
 
 class HiFiGAN(nn.Module):
-    def __init__(self, config: HiFiGANConfig) -> None:
+    """Defines a HiFi-GAN model.
+
+    Parameters:
+        resblock_kernel_sizes: The kernel sizes of the ResBlocks.
+        resblock_dilation_sizes: The dilation sizes of the ResBlocks.
+        upsample_rates: The upsample rates of each layer.
+        upsample_initial_channel: The initial channel of the upsampling layers.
+        upsample_kernel_sizes: The kernel sizes of the upsampling layers.
+        model_in_dim: The input dimension of the model.
+        sampling_rate: The sampling rate of the model.
+        lrelu_slope: The slope of the leaky ReLU.
+    """
+
+    def __init__(
+        self,
+        resblock_kernel_sizes: list[int] = [3, 7, 11],
+        resblock_dilation_sizes: list[tuple[int, int, int]] = [(1, 3, 5), (1, 3, 5), (1, 3, 5)],
+        upsample_rates: list[int] = [8, 8, 2, 2],
+        upsample_initial_channel: int = 512,
+        upsample_kernel_sizes: list[int] = [16, 16, 4, 4],
+        model_in_dim: int = 80,
+        sampling_rate: int = 22050,
+        lrelu_slope: float = 0.1,
+    ) -> None:
         super().__init__()
 
-        self.sampling_rate = config.sampling_rate
-        self.num_kernels = len(config.resblock_kernel_sizes)
-        self.num_upsamples = len(config.upsample_rates)
-        self.lrelu_slope = config.lrelu_slope
-        conv_pre = nn.Conv1d(config.model_in_dim, config.upsample_initial_channel, 7, 1, padding=3)
-        self.conv_pre = lora_weight_norm(conv_pre, config.lora_rank)
+        self.model_in_dim = model_in_dim
+        self.sampling_rate = sampling_rate
+        self.num_kernels = len(resblock_kernel_sizes)
+        self.num_upsamples = len(upsample_rates)
+        self.lrelu_slope = lrelu_slope
+        conv_pre = StreamingConv1d(model_in_dim, upsample_initial_channel, kernel_size=7, stride=1, padding=3)
+        self.conv_pre = weight_norm(conv_pre)
 
-        assert len(config.upsample_rates) == len(config.upsample_kernel_sizes)
+        assert len(upsample_rates) == len(upsample_kernel_sizes)
 
-        self.ups = nn.ModuleList()
-        for i, (u, k) in enumerate(zip(config.upsample_rates, config.upsample_kernel_sizes)):
-            module = nn.ConvTranspose1d(
-                config.upsample_initial_channel // (2**i),
-                config.upsample_initial_channel // (2 ** (i + 1)),
-                k,
-                u,
-                padding=(k - u) // 2,
+        self.ups = cast(list[StreamingConvTranspose1d], nn.ModuleList())
+        for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
+            module = StreamingConvTranspose1d(
+                upsample_initial_channel // (2**i),
+                upsample_initial_channel // (2 ** (i + 1)),
+                kernel_size=k,
+                stride=u,
+                # padding=(k - u) // 2,
             )
-            self.ups.append(lora_weight_norm(module, config.lora_rank))
+            self.ups.append(weight_norm(module))
 
         self.resblocks = cast(list[ResBlock], nn.ModuleList())
         for i in range(len(self.ups)):
-            ch = config.upsample_initial_channel // (2 ** (i + 1))
-            for k, d in zip(config.resblock_kernel_sizes, config.resblock_dilation_sizes):
-                self.resblocks.append(ResBlock(ch, k, d, config.lrelu_slope, config.lora_rank))
+            ch = upsample_initial_channel // (2 ** (i + 1))
+            for k, d in zip(resblock_kernel_sizes, resblock_dilation_sizes):
+                self.resblocks.append(ResBlock(ch, k, d, lrelu_slope))
 
-        self.conv_post = lora_weight_norm(nn.Conv1d(ch, 1, 7, 1, padding=3), config.lora_rank)
-        self.ups.apply(init_hifigan_weights)
+        self.conv_post = weight_norm(StreamingConv1d(ch, 1, 7, 1, padding=3))
+        cast(nn.ModuleList, self.ups).apply(init_hifigan_weights)
         self.conv_post.apply(init_hifigan_weights)
 
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.conv_pre(x)
+    def forward(self, x: Tensor, state: HiFiGANState | None = None) -> tuple[Tensor, HiFiGANState]:
+        x, pre_s = self.conv_pre.forward(x, get(state, 0))
+        up_s_in = get(state, 1)
+        up_s_out: list[StreamingConvState] = []
+        down_s_in = get(state, 2)
+        down_s_out: list[list[ResBlockState]] = []
+        sa_in = get(state, 3)
+        sa_out: list[list[StreamingAddState]] = []
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.lrelu_slope)
-            x = up(x)
+            x, up_s = up.forward(x, get(up_s_in, i))
+            up_s_out.append(up_s)
             xs = None
+            down_s_in_i = get(down_s_in, i)
+            down_s_out_i: list[ResBlockState] = []
+            sa_in_i = get(sa_in, i)
+            sa_out_i: list[StreamingAddState] = []
             for j in range(self.num_kernels):
+                down_s_in_ij = get(down_s_in_i, j)
+                sa_in_ij = get(sa_in_i, j - 1)
+                xs_i, down_s_out_ij = self.resblocks[i * self.num_kernels + j].forward(x, down_s_in_ij)
                 if xs is None:
-                    xs = self.resblocks[i * self.num_kernels + j](x)
+                    xs = xs_i
                 else:
-                    xs += self.resblocks[i * self.num_kernels + j](x)
+                    xs, sa_i = streaming_add(xs, xs_i, sa_in_ij)
+                    sa_out_i.append(sa_i)
+                down_s_out_i.append(down_s_out_ij)
+            down_s_out.append(down_s_out_i)
+            sa_out.append(sa_out_i)
             assert xs is not None
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
-        x = self.conv_post(x)
+        x, post_s = self.conv_post.forward(x, get(state, 4))
         x = torch.tanh(x)
 
-        return x
+        return x, (pre_s, up_s_out, down_s_out, sa_out, post_s)
 
     def infer(self, x: Tensor) -> Tensor:
-        return self.forward(x)
+        y, _ = self.forward(x)
+        return y
 
     def remove_weight_norm(self) -> None:
         for layer in self.ups:
@@ -237,34 +269,17 @@ class HiFiGAN(nn.Module):
         remove_weight_norm(self.conv_post)
 
 
-def pretrained_hifigan(
-    *,
-    pretrained: bool = True,
-    lora_rank: int | None = None,
+def _load_hifigan_weights(
+    model: HiFiGAN,
+    url: str,
+    load_weights: bool = True,
     device: torch.device | None = None,
 ) -> HiFiGAN:
-    """Loads the pretrained HiFi-GAN model.
-
-    Args:
-        pretrained: Whether to load the pretrained weights.
-        lora_rank: The LoRA rank to use, if LoRA is desired.
-        device: The device to load the weights onto.
-
-    Returns:
-        The pretrained HiFi-GAN model.
-    """
-    config = HiFiGANConfig(lora_rank=lora_rank)
-
-    if not pretrained:
-        return HiFiGAN(config)
-
-    # Can't initialize empty weights because of weight norm.
-    # with Timer("initializing model", spinner=True), init_empty_weights():
-    with Timer("initializing model", spinner=True):
-        model = HiFiGAN(config)
+    if not load_weights:
+        return model
 
     with Timer("downloading checkpoint"):
-        model_path = ensure_downloaded(HIFIGAN_CKPT_URL, "hifigan", "weights_hifigan.pth")
+        model_path = ensure_downloaded(url, "hifigan", "weights_hifigan.pth")
 
     with Timer("loading checkpoint", spinner=True):
         if device is None:
@@ -273,6 +288,24 @@ def pretrained_hifigan(
         model.to(device)
         model.load_state_dict(ckpt)
 
+    return model
+
+
+def pretrained_hifigan(*, pretrained: bool = True, keep_weight_norm: bool = False) -> HiFiGAN:
+    """Loads the pretrained HiFi-GAN model.
+
+    Args:
+        pretrained: Whether to load the pretrained weights.
+        keep_weight_norm: Whether to keep the weight norm.
+
+    Returns:
+        The pretrained HiFi-GAN model.
+    """
+    with Timer("initializing model", spinner=True):
+        model = HiFiGAN()
+    model = _load_hifigan_weights(model, HIFIGAN_CKPT_URL, pretrained)
+    if not keep_weight_norm:
+        model.remove_weight_norm()
     return model
 
 
@@ -363,11 +396,7 @@ class AudioToHifiGanMels(nn.Module):
     mel_basis: Tensor
     hann_window: Tensor
 
-    def wav_to_mels(
-        self,
-        y: Tensor,
-        center: bool = False,
-    ) -> Tensor:
+    def wav_to_mels(self, y: Tensor, center: bool = False) -> Tensor:
         ymin, ymax = torch.min(y), torch.max(y)
         if ymin < -1.0:
             logger.warning("min value is %.2g", ymin)
@@ -406,6 +435,8 @@ def test_mel_to_audio_adhoc() -> None:
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
 
+    dev = detect_device()
+
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
@@ -416,19 +447,22 @@ def test_mel_to_audio_adhoc() -> None:
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
+    audio = dev.tensor_to(audio)
 
     # Loads the HiFi-GAN model.
     model = pretrained_hifigan(pretrained=True)
+    dev.module_to(model)
 
     # Converts the audio to mels.
     audio_to_mels = AudioToHifiGanMels()
+    dev.module_to(audio_to_mels)
     mels = audio_to_mels.wav_to_mels(audio)
 
     # Converts the mels back to audio.
-    audio = model(mels).squeeze(0)
+    audio = model.infer(mels).squeeze(0)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, audio, 22050)
+    torchaudio.save(args.output_file, audio.cpu(), 22050)
 
     logger.info("Saved %s", args.output_file)
 

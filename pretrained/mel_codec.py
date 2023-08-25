@@ -26,6 +26,7 @@ import torchaudio
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
 from ml.models.embeddings import get_positional_embeddings
 from ml.utils.checkpoint import ensure_downloaded
+from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -315,7 +316,7 @@ class MelCodecDequantizer(nn.Module):
     mask: Tensor
 
     def _get_audio(self, mels: Tensor) -> Tensor:
-        return self.hifigan(mels.transpose(1, 2)).squeeze(1)
+        return self.hifigan.infer(mels.transpose(1, 2)).squeeze(1)
 
     def _tokens_to_embedding(self, tokens: Tensor) -> Tensor:
         return self.rvq.decode(tokens).transpose(1, 2)
@@ -413,25 +414,31 @@ def test_codec_adhoc() -> None:
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     args = parser.parse_args()
 
+    dev = detect_device()
+    mul = 10 if dev._device.type == "cuda" else 1
+
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
-    audio = audio[:, : sr * 10]
+    audio = audio[:, : sr * mul]
     if sr != 22050:
         audio = torchaudio.functional.resample(audio, sr, 22050)
 
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
+    audio = dev.tensor_to(audio)
 
     # Loads the pretrained model.
     model = pretrained_mel_codec("librivox")
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
+    dev.module_to(quantizer)
+    dev.module_to(dequantizer)
     tokens = quantizer(audio)
     audio = dequantizer(tokens)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, audio, 22050)
+    torchaudio.save(args.output_file, audio.cpu(), 22050)
 
     logger.info("Saved %s", args.output_file)
 
