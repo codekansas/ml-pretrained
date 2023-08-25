@@ -1,9 +1,9 @@
 from typing import Literal, cast, get_args, overload
 
-from .hifigan import HiFiGAN, pretrained_hifigan
+from .hifigan import HiFiGAN, PretrainedHiFiGANType, pretrained_hifigan
 from .waveglow import WaveGlow, pretrained_waveglow
 
-VocoderType = Literal["hifigan", "waveglow"]
+VocoderType = Literal["waveglow", "hifigan"]
 Vocoder = HiFiGAN | WaveGlow
 
 
@@ -14,7 +14,7 @@ def cast_vocoder_type(vocoder_type: str) -> VocoderType:
 
 
 @overload
-def pretrained_vocoder(vocoder_type: Literal["hifigan"]) -> HiFiGAN:
+def pretrained_vocoder(vocoder_type: Literal["hifigan"], *, hifigan: PretrainedHiFiGANType = "16000hz") -> HiFiGAN:
     ...
 
 
@@ -23,10 +23,10 @@ def pretrained_vocoder(vocoder_type: Literal["waveglow"]) -> WaveGlow:
     ...
 
 
-def pretrained_vocoder(vocoder_type: VocoderType) -> Vocoder:
+def pretrained_vocoder(vocoder_type: VocoderType, *, hifigan: PretrainedHiFiGANType = "16000hz") -> Vocoder:
     match vocoder_type:
         case "hifigan":
-            return pretrained_hifigan()
+            return pretrained_hifigan(hifigan)
         case "waveglow":
             return pretrained_waveglow()
         case _:
