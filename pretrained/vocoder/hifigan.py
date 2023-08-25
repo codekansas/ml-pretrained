@@ -459,10 +459,10 @@ def test_mel_to_audio_adhoc() -> None:
     mels = audio_to_mels.wav_to_mels(audio)
 
     # Converts the mels back to audio.
-    audio = model.infer(mels).squeeze(0).cpu()
+    audio = model.infer(mels).squeeze(0)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, audio, 22050)
+    torchaudio.save(args.output_file, audio.cpu(), 22050)
 
     logger.info("Saved %s", args.output_file)
 

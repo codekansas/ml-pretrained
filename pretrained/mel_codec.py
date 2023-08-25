@@ -21,12 +21,12 @@ from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
 import safetensors.torch
-from ml.utils.device.auto import detect_device
 import torch
 import torchaudio
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
 from ml.models.embeddings import get_positional_embeddings
 from ml.utils.checkpoint import ensure_downloaded
+from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
@@ -316,7 +316,7 @@ class MelCodecDequantizer(nn.Module):
     mask: Tensor
 
     def _get_audio(self, mels: Tensor) -> Tensor:
-        return self.hifigan(mels.transpose(1, 2)).squeeze(1)
+        return self.hifigan.infer(mels.transpose(1, 2)).squeeze(1)
 
     def _tokens_to_embedding(self, tokens: Tensor) -> Tensor:
         return self.rvq.decode(tokens).transpose(1, 2)
@@ -382,7 +382,9 @@ def _load_pretrained_mel_codec(
     return model
 
 
-def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048) -> MelCodec:
+def pretrained_mel_codec(
+    key: str | PretrainedMelCodecType, load_weights: bool = True, max_tsz: int = 2048
+) -> MelCodec:
     match key:
         case "librivox":
             return _load_pretrained_mel_codec(
@@ -415,11 +417,12 @@ def test_codec_adhoc() -> None:
     args = parser.parse_args()
 
     dev = detect_device()
+    mul = 10 if dev._device.type == "cuda" else 1
 
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
-    audio = audio[:, : sr * 10]
+    audio = audio[:, : sr * mul]
     if sr != 22050:
         audio = torchaudio.functional.resample(audio, sr, 22050)
 
@@ -437,7 +440,7 @@ def test_codec_adhoc() -> None:
     audio = dequantizer(tokens)
 
     # Saves the audio.
-    torchaudio.save(args.output_file, audio, 22050)
+    torchaudio.save(args.output_file, audio.cpu(), 22050)
 
     logger.info("Saved %s", args.output_file)
 
