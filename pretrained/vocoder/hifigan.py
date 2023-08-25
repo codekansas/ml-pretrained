@@ -12,7 +12,7 @@ synthesize audio.
 
 import argparse
 import logging
-from typing import TypeVar, cast
+from typing import Sequence, TypeVar, cast
 
 import numpy as np
 import torch
@@ -32,7 +32,7 @@ HIFIGAN_CKPT_URL = "https://huggingface.co/jaketae/hifigan-lj-v1/resolve/main/py
 T = TypeVar("T")
 
 
-def get(x: list[T] | None, i: int) -> T | None:
+def get(x: Sequence[T] | None, i: int) -> T | None:
     return None if x is None else x[i]
 
 
@@ -42,12 +42,13 @@ def init_hifigan_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> 
 
 
 StreamingConvState = tuple[Tensor, int]
-ResBlockState = list[tuple[StreamingConvState, StreamingConvState, Tensor]]
+StreamingAddState = tuple[Tensor, Tensor]
+ResBlockState = list[tuple[StreamingConvState, StreamingConvState, StreamingAddState]]
 HiFiGANState = tuple[
     StreamingConvState,
     list[StreamingConvState],
     list[ResBlockState],
-    list[Tensor],
+    list[StreamingAddState],
     StreamingConvState,
 ]
 
@@ -220,16 +221,20 @@ class HiFiGAN(nn.Module):
 
     def forward(self, x: Tensor, state: HiFiGANState | None = None) -> tuple[Tensor, HiFiGANState]:
         x, pre_s = self.conv_pre(x, get(state, 0))
-        up_s_in, up_s_out = get(state, 1), []
-        down_s_in, down_s_out = get(state, 2), []
-        sa_in, sa_out = get(state, 3), []
+        up_s_in = get(state, 1)
+        up_s_out: list[StreamingConvState] = []
+        down_s_in = get(state, 2)
+        down_s_out: list[list[StreamingConvState]] = []
+        sa_in = get(state, 3)
+        sa_out: list[list[StreamingAddState]] = []
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.lrelu_slope)
             x, up_s = up(x, get(up_s_in, i))
             up_s_out.append(up_s)
             xs = None
             down_s_in_i, down_s_out_i = get(down_s_in, i), []
-            sa_in_i, sa_out_i = get(sa_in, i), []
+            sa_in_i = get(sa_in, i)
+            sa_out_i: list[StreamingAddState] = []
             for j in range(self.num_kernels):
                 down_s_in_ij = get(down_s_in_i, j)
                 sa_in_ij = get(sa_in_i, j - 1)
