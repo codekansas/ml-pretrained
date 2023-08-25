@@ -12,7 +12,7 @@ synthesize audio.
 
 import argparse
 import logging
-from typing import cast
+from typing import TypeVar, cast
 
 import numpy as np
 import torch
@@ -28,6 +28,12 @@ from torch.nn.utils import remove_weight_norm, weight_norm
 logger = logging.getLogger(__name__)
 
 HIFIGAN_CKPT_URL = "https://huggingface.co/jaketae/hifigan-lj-v1/resolve/main/pytorch_model.bin"
+
+T = TypeVar("T")
+
+
+def get(x: list[T] | None, i: int) -> T | None:
+    return None if x is None else x[i]
 
 
 def init_hifigan_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> None:
@@ -138,11 +144,12 @@ class ResBlock(nn.Module):
     def forward(self, x: Tensor, state: ResBlockState | None) -> tuple[Tensor, ResBlockState]:
         state_out: ResBlockState = []
         for i, (c1, c2) in enumerate(zip(self.convs1, self.convs2)):
+            state_in_i = get(state, i)
             xt = F.leaky_relu(x, self.lrelu_slope)
-            xt, s1 = c1(xt, None if state is None else state[i][0])
+            xt, s1 = c1(xt, get(state_in_i, 0))
             xt = F.leaky_relu(xt, self.lrelu_slope)
-            xt, s2 = c2(xt, None if state is None else state[i][1])
-            x, sa = streaming_add(xt, x, None if state is None else state[i][2])
+            xt, s2 = c2(xt, get(state_in_i, 1))
+            x, sa = streaming_add(xt, x, get(state_in_i, 2))
             state_out.append((s1, s2, sa))
         return x, state_out
 
@@ -207,38 +214,36 @@ class HiFiGAN(nn.Module):
             for k, d in zip(resblock_kernel_sizes, resblock_dilation_sizes):
                 self.resblocks.append(ResBlock(ch, k, d, lrelu_slope))
 
-        conv_post = StreamingConv1d(ch, 1, 7, 1, padding=3)
-        self.conv_post = weight_norm(conv_post)
+        self.conv_post = weight_norm(StreamingConv1d(ch, 1, 7, 1, padding=3))
         self.ups.apply(init_hifigan_weights)
         self.conv_post.apply(init_hifigan_weights)
 
     def forward(self, x: Tensor, state: HiFiGANState | None = None) -> tuple[Tensor, HiFiGANState]:
-        x, pre_s = self.conv_pre(x, None if state is None else state[0])
-        up_s_in, up_s_out = None if state is None else state[1], []
-        down_s_in, down_s_out = None if state is None else state[2], []
-        sa_in, sa_out = None if state is None else state[3], []
+        x, pre_s = self.conv_pre(x, get(state, 0))
+        up_s_in, up_s_out = get(state, 1), []
+        down_s_in, down_s_out = get(state, 2), []
+        sa_in, sa_out = get(state, 3), []
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.lrelu_slope)
-            x, up_s = up(x, None if up_s_in is None else up_s_in[i])
+            x, up_s = up(x, get(up_s_in, i))
             up_s_out.append(up_s)
             xs = None
-            down_s_in_i, down_s_out_i = None if down_s_in is None else down_s_in[i], []
-            sa_in_i, sa_out_i = None if sa_in is None else sa_in[i], []
+            down_s_in_i, down_s_out_i = get(down_s_in, i), []
+            sa_in_i, sa_out_i = get(sa_in, i), []
             for j in range(self.num_kernels):
-                down_s_in_ij = None if down_s_in_i is None else down_s_in_i[j]
-                sa_in_ij = None if sa_in_i is None else sa_in_i[j - 1]
+                down_s_in_ij = get(down_s_in_i, j)
+                sa_in_ij = get(sa_in_i, j - 1)
                 xs_i, down_s_out_ij = self.resblocks[i * self.num_kernels + j](x, down_s_in_ij)
                 xs, sa_i = (xs_i, None) if xs is None else streaming_add(xs, xs_i, sa_in_ij)
                 if sa_i is not None:
                     sa_out_i.append(sa_i)
-                xs = xs_i if xs is None else xs + xs_i
                 down_s_out_i.append(down_s_out_ij)
             down_s_out.append(down_s_out_i)
             sa_out.append(sa_out_i)
             assert xs is not None
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
-        x, post_s = self.conv_post(x, None if state is None else state[4])
+        x, post_s = self.conv_post(x, get(state, 4))
         x = torch.tanh(x)
 
         return x, (pre_s, up_s_out, down_s_out, sa_out, post_s)
