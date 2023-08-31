@@ -203,8 +203,8 @@ class WavCodecQuantizer(nn.Module):
         x = self.rvq.encode(x)
         return x, state
 
-    def forward(self, waveform: Tensor, waveform_prev: Tensor | None = None) -> tuple[Tensor, Tensor]:
-        return self.encode(waveform, waveform_prev)
+    def forward(self, waveform: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
+        return self.encode(waveform, state)
 
 
 class WavCodecDequantizer(nn.Module):
