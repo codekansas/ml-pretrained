@@ -45,7 +45,7 @@ import torchaudio.sox_effects as ta_sox
 from ml.models.activations import ActivationType, get_activation
 from ml.models.kmeans import KMeans
 from ml.models.norms import ConvLayerNorm
-from ml.utils.audio import Reader, get_audio_props, read_audio
+from ml.utils.audio import get_audio_props, read_audio
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import detect_device
 from ml.utils.device.base import base_device
@@ -851,8 +851,6 @@ class HubertPredictor:
         chunk_length_sec: float = 10.0,
         output_layer: int | float | None = None,
         causal: bool = False,
-        *,
-        reader: Reader = "sf",
     ) -> Tensor:
         """Gets the hidden states for the given audio file, in chunks.
 
@@ -869,12 +867,11 @@ class HubertPredictor:
                 the model. For example, `0.5` will return the hidden states
                 from the middle layer. Negative values will wrap around.
             causal: If set, use a causal attention mask.
-            reader: The reader to use for reading the audio file.
 
         Returns:
             The hidden states for the given waveform, with shape (B, T, D)
         """
-        props = get_audio_props(path, reader=reader)
+        props = get_audio_props(path)
         effects: list[tuple[str, str]] = [("gain", "-n"), ("channels", "1")]
         if props.sample_rate != self.sample_rate:
             effects.append(("rate", str(self.sample_rate)))
@@ -886,7 +883,6 @@ class HubertPredictor:
                 path,
                 chunk_length=chunk_length,
                 sample_rate=self.sample_rate,
-                reader=reader,
             ):
                 waveform_tensor = torch.from_numpy(waveform_chunk).to(torch.float32)
                 waveform_tensor, _ = ta_sox.apply_effects_tensor(waveform_tensor, props.sample_rate, effects)
