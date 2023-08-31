@@ -479,6 +479,9 @@ class AudioToHifiGanMels(nn.Module):
 
         return spec
 
+    def forward(self, y: Tensor, center: bool = False) -> Tensor:
+        return self.wav_to_mels(y, center)
+
 
 def test_mel_to_audio_adhoc() -> None:
     configure_logging()
