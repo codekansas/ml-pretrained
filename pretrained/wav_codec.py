@@ -22,20 +22,22 @@ from typing import Literal, cast, get_args
 import torch
 import torch.nn.functional as F
 import torchaudio
-import tqdm
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
+from ml.models.modules import StreamingConv1d
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
-from ml.utils.timer import Timer
+from ml.utils.timer import Timer, spinnerator
 from torch import Tensor, nn, optim
 
 logger = logging.getLogger(__name__)
 
-PretrainedWavCodecType = Literal["small", "large"]
+PretrainedWavCodecType = Literal["base"]
 
 RNNClass: type[nn.LSTM] | type[nn.GRU] = nn.LSTM
 RNNState = tuple[Tensor, Tensor]
+
+EncoderState = tuple[Tensor, list[tuple[Tensor, int]]]
 
 
 def cast_pretrained_mel_codec_type(s: str | PretrainedWavCodecType) -> PretrainedWavCodecType:
@@ -44,36 +46,55 @@ def cast_pretrained_mel_codec_type(s: str | PretrainedWavCodecType) -> Pretraine
     return cast(PretrainedWavCodecType, s)
 
 
+def split_waveform(waveform: Tensor, stride_length: int, waveform_prev: Tensor | None = None) -> tuple[Tensor, Tensor]:
+    if waveform_prev is not None:
+        waveform = torch.cat((waveform_prev, waveform), dim=-1)
+    tsz = waveform.shape[-1]
+    rest = tsz % stride_length
+    split = tsz - rest
+    return waveform[..., :split], waveform[..., split:]
+
+
+class CBR(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
+        super().__init__()
+
+        self.conv = StreamingConv1d(in_channels, out_channels, kernel_size, bias=False)
+        self.bn = nn.BatchNorm1d(out_channels)
+        self.act = nn.GELU()
+
+    def forward(self, x: Tensor, state: tuple[Tensor, int] | None = None) -> tuple[Tensor, tuple[Tensor, int]]:
+        x, state = self.conv.forward(x, state)
+        x = self.bn(x)
+        x = self.act(x)
+        return x, state
+
+
 class Encoder(nn.Module):
     __constants__ = ["stride_length"]
 
-    def __init__(self, stride_length: int, hidden_size: int) -> None:
+    def __init__(self, stride_length: int, d_model: int, kernel_size: int = 5) -> None:
         super().__init__()
 
         self.stride_length = stride_length
-        self.in_proj = nn.Sequential(
-            nn.Linear(stride_length, hidden_size, bias=False),
-            nn.LayerNorm(hidden_size),
-            nn.ReLU(),
+
+        self.encoder = nn.ModuleList(
+            [
+                CBR(stride_length, d_model, 1),
+                CBR(d_model, d_model, kernel_size),
+                CBR(d_model, d_model, kernel_size),
+            ],
         )
 
-    def _split_waveform(self, waveform: Tensor, waveform_prev: Tensor | None) -> tuple[Tensor, Tensor]:
-        if waveform_prev is not None:
-            waveform = torch.cat((waveform_prev, waveform), dim=-1)
-        tsz = waveform.shape[-1]
-        rest = tsz % self.stride_length
-        split = tsz - rest
-        return waveform[..., :split], waveform[..., split:]
-
-    def forward(
-        self,
-        waveform: Tensor,
-        waveform_prev: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor]:
-        waveform, waveform_rest = self._split_waveform(waveform, waveform_prev)
-        x = waveform.unflatten(-1, (-1, self.stride_length))
-        x = self.in_proj(x)
-        return x, waveform_rest
+    def forward(self, waveform: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
+        waveform_prev = None if state is None else state[0]
+        waveform, waveform_rest = split_waveform(waveform, self.stride_length, waveform_prev)
+        x = waveform.unflatten(-1, (-1, self.stride_length)).transpose(1, 2)
+        states_out: list[tuple[Tensor, int]] = []
+        for i, conv in enumerate(self.encoder):
+            x, state_out = conv(x, None if state is None else state[1][i])
+            states_out.append(state_out)
+        return x, (waveform_rest, states_out)
 
 
 class Decoder(nn.Module):
@@ -166,20 +187,21 @@ class WavCodecQuantizer(nn.Module):
         self.encoder = model.encoder
         self.rvq = model.rvq
 
-    def encode(self, waveform: Tensor, waveform_prev: Tensor | None = None) -> tuple[Tensor, Tensor]:
+    def encode(self, waveform: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
         """Converts a waveform into a set of tokens.
 
         Args:
             waveform: The single-channel input waveform, with shape ``(B, T)``
                 This should be at 16000 Hz.
-            waveform_prev: The leftover from the previous call to ``encode``.
+            state: The encoder state from the previous step.
 
         Returns:
-            The quantized tokens, with shape ``(N, B, Tq)``
+            The quantized tokens, with shape ``(N, B, Tq)``, along with the
+            encoder state to pass to the next step.
         """
-        x, waveform_rest = self.encoder(waveform, waveform_prev)
-        x = self.rvq.encode(x.transpose(1, 2))
-        return x, waveform_rest
+        x, state = self.encoder(waveform, state)
+        x = self.rvq.encode(x)
+        return x, state
 
     def forward(self, waveform: Tensor, waveform_prev: Tensor | None = None) -> tuple[Tensor, Tensor]:
         return self.encode(waveform, waveform_prev)
@@ -222,7 +244,7 @@ def _load_pretrained_mel_codec(
         model_fname = f"{key}.bin"
 
         with Timer("downloading checkpoint"):
-            model_path = ensure_downloaded(ckpt_url, "codec", model_fname, sha256=sha256)
+            model_path = ensure_downloaded(ckpt_url, "wav_codec", model_fname, sha256=sha256)
 
         with Timer("loading checkpoint", spinner=True):
             ckpt = torch.load(model_path)
@@ -235,34 +257,21 @@ def pretrained_wav_codec(key: str | PretrainedWavCodecType, load_weights: bool =
     key = cast_pretrained_mel_codec_type(key)
 
     match key:
-        case "small":
-            return _load_pretrained_mel_codec(
-                model=WavCodec(
-                    stride_length=320,
-                    hidden_size=512,
-                    num_layers=2,
-                    codebook_size=512,
-                    num_quantizers=8,
-                ),
-                key=key,
-                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/small.bin",
-                sha256="4e648c8dfb4045f26d25267410e6b1568aad3528ab3a97736a1d42d5e4ae57d0",
-                load_weights=load_weights,
-            )
-        case "large":
+        case "base":
             return _load_pretrained_mel_codec(
                 model=WavCodec(
                     stride_length=320,
                     hidden_size=1024,
                     num_layers=4,
-                    codebook_size=512,
+                    codebook_size=1024,
                     num_quantizers=8,
                 ),
                 key=key,
-                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/large.bin",
-                sha256="01adefc956a91befdefe386ec0cac4086c54b16ca66a4684617522035aed585e",
+                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/wavs_base.bin",
+                sha256="6bde4c577ea6477ead9e69780a17370712ce588d56df51c2184b2457671f5acf",
                 load_weights=load_weights,
             )
+
         case _:
             raise ValueError(f"Unknown codec key: {key}")
 
@@ -270,10 +279,12 @@ def pretrained_wav_codec(key: str | PretrainedWavCodecType, load_weights: bool =
 def test_codec_adhoc() -> None:
     configure_logging()
 
+    type_choices = list(get_args(PretrainedWavCodecType))
+
     parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
-    parser.add_argument("-k", "--key", choices=get_args(PretrainedWavCodecType), default="large")
+    parser.add_argument("-k", "--key", choices=type_choices, default=type_choices[0])
     args = parser.parse_args()
 
     # Loads the audio file.
@@ -289,11 +300,11 @@ def test_codec_adhoc() -> None:
     # Loads the pretrained model.
     model = pretrained_wav_codec(args.key)
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
-    waveform_prev: Tensor | None = None
+    encoder_state: EncoderState | None = None
     decoder_state: RNNState | None = None
     audio_recs: list[Tensor] = []
-    for audio_chunk in tqdm.tqdm(audio.split(16000 * 10, dim=-1)):
-        tokens, waveform_prev = quantizer(audio_chunk, waveform_prev)
+    for audio_chunk in spinnerator(audio.split(16000 * 10, dim=-1)):
+        tokens, encoder_state = quantizer(audio_chunk, encoder_state)
         audio_rec, decoder_state = dequantizer(tokens, decoder_state)
         audio_recs.append(audio_rec)
 
@@ -307,9 +318,12 @@ def test_codec_adhoc() -> None:
 def test_codec_training_adhoc() -> None:
     configure_logging()
 
+    type_choices = list(get_args(PretrainedWavCodecType))
+
     parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
+    parser.add_argument("-t", "--type", choices=type_choices, default=type_choices[0])
     parser.add_argument("-n", "--num-steps", type=int, default=1000, help="Number of steps to run")
     parser.add_argument("-l", "--log-interval", type=int, default=1, help="Log interval")
     parser.add_argument("-s", "--num-seconds", type=float, default=5.0, help="Number of seconds to use")
@@ -330,7 +344,7 @@ def test_codec_training_adhoc() -> None:
     audio = device.tensor_to(audio)
 
     # Loads the model.
-    model = pretrained_wav_codec("wav-codec-small", load_weights=False)
+    model = pretrained_wav_codec(args.type, load_weights=False)
     model.to(device._get_device())
 
     # Runs training.

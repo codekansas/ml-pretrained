@@ -16,26 +16,30 @@
 """
 
 import argparse
+import functools
 import logging
-from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
-import safetensors.torch as st
 import torch
 import torchaudio
 from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
-from ml.models.embeddings import get_positional_embeddings
+from ml.models.modules import StreamingConv1d
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
-from ml.utils.timer import Timer
+from ml.utils.timer import Timer, spinnerator
 from torch import Tensor, nn
 
 from pretrained.vocoder.hifigan import HiFiGAN, PretrainedHiFiGANType, pretrained_hifigan
 
 logger = logging.getLogger(__name__)
 
-PretrainedMelCodecType = Literal["librivox"]
+RNNClass: type[nn.LSTM] | type[nn.GRU] = nn.LSTM
+RNNState = tuple[Tensor, Tensor]
+
+PretrainedMelCodecType = Literal["base"]
+
+EncoderState = list[tuple[Tensor, int]]
 
 
 def cast_pretrained_mel_codec_type(s: str) -> PretrainedMelCodecType:
@@ -44,59 +48,153 @@ def cast_pretrained_mel_codec_type(s: str) -> PretrainedMelCodecType:
     return cast(PretrainedMelCodecType, s)
 
 
-@dataclass
-class MelCodecConfig:
-    num_mels: int
-    d_model: int
-    nhead: int
-    dim_feedforward: int
-    num_layers: int
-    codebook_size: int
-    num_quantizers: int
-    encoder_causal: bool
-    max_tsz: int
-    hifigan_key: PretrainedHiFiGANType
+class CBR(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
+        super().__init__()
+
+        self.conv = StreamingConv1d(in_channels, out_channels, kernel_size, bias=False)
+        self.bn = nn.BatchNorm1d(out_channels)
+        self.act = nn.GELU()
+
+    def forward(self, x: Tensor, state: tuple[Tensor, int] | None = None) -> tuple[Tensor, tuple[Tensor, int]]:
+        x, state = self.conv.forward(x, state)
+        x = self.bn(x)
+        x = self.act(x)
+        return x, state
+
+
+class Encoder(nn.Module):
+    """Defines the encoder module.
+
+    This module takes the Mel spectrogram as an input and outputs the
+    latent representation to quantize.
+
+    Parameters:
+        num_mels: Number of input Mel spectrogram bins.
+        d_model: The hidden dimension of the model.
+
+    Inputs:
+        mels: The input Mel spectrogram, with shape ``(B, T, C)``.
+        state: The previous state of the encoder, if any.
+
+    Outputs:
+        The latent representation, with shape ``(B, T, C)``, along with the
+        updated state.
+    """
+
+    def __init__(self, num_mels: int, d_model: int) -> None:
+        super().__init__()
+
+        self.encoder = nn.ModuleList(
+            [
+                CBR(num_mels, d_model, 1),
+                CBR(d_model, d_model, 5),
+                CBR(d_model, d_model, 5),
+            ],
+        )
+
+    def forward(self, mels: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
+        x = mels.transpose(1, 2)
+        states_out: EncoderState = []
+        for i, layer in enumerate(self.encoder):
+            x, state_out = layer(x, None if state is None else state[i])
+            states_out.append(state_out)
+        return x.transpose(1, 2), states_out
+
+
+class Decoder(nn.Module):
+    """Defines the decoder module.
+
+    This module takes the latent representation as input and outputs the
+    reconstructed Mel spectrogram. this can be run in inference mode, where
+    the model expects to see batches of codes and maintains a state over time,
+    or in training mode, where the model expects to see the ground truth
+    Mel spectrogram in addition to the codes.
+
+    Parameters:
+        num_mels: Number of input Mel spectrogram bins.
+        d_model: The hidden dimension of the model.
+
+    Inputs:
+        codes: The latent representation, with shape ``(B, T, C)``.
+        mels: The input Mel spectrogram, with shape ``(B, T, C)``, if in
+            training mode.
+
+    Outputs:
+        The reconstructed Mel spectrogram, with shape ``(B, T, C)``, along
+        with the updated state if in training mode.
+    """
+
+    def __init__(self, num_mels: int, d_model: int, num_layers: int) -> None:
+        super().__init__()
+
+        self.register_buffer("init_emb", torch.zeros(1, 1, d_model))
+
+        self.decoder_rnn = RNNClass(
+            input_size=d_model,
+            hidden_size=d_model,
+            num_layers=num_layers,
+            batch_first=True,
+        )
+
+        self.in_proj = nn.Linear(num_mels, d_model)
+        self.out_proj = nn.Linear(d_model, num_mels)
+
+    init_emb: Tensor
+
+    def forward(self, codes: Tensor, mels: Tensor) -> Tensor:
+        x_prev = self.in_proj(mels[:, :-1])
+        x_prev = torch.cat([self.init_emb.repeat(x_prev.shape[0], 1, 1), x_prev], dim=1)
+        x = codes + x_prev
+        x, _ = self.decoder_rnn(x)
+        x = self.out_proj(x)
+        return x
+
+    def infer(self, codes: Tensor, state: RNNState | None = None) -> tuple[Tensor, RNNState]:
+        init_emb = self.init_emb.repeat(codes.shape[0], 1, 1)
+        x_nb = init_emb
+        tsz = codes.shape[1]
+        xs = []
+        for t in range(tsz):
+            x = codes[:, t : t + 1] + x_nb
+            x, state = self.decoder_rnn(x, state)
+            x = self.out_proj(x)
+            xs.append(x)
+            if t < tsz - 1:
+                x_nb = self.in_proj(x)
+        assert state is not None
+        return torch.cat(xs, dim=1), state
 
 
 class MelCodec(nn.Module):
-    """Defines an audio transformer module.
+    """Defines an audio RNN module.
 
-    This module takes the Mel spectrogram as an input and outputs the
-    predicted next step of the Mel spectrogram.
+    This module takes the Mel spectrogram as an input and outputs the predicted
+    next step of the Mel spectrogram.
 
     Parameters:
-        num_mels: The number of Mel spectrogram channels.
-        d_model: The dimensionality of the transformer model.
-        nhead: The number of transformer attention heads.
-        dim_feedforward: The dimensionality of the feedforward network.
-        num_layers: The number of layers in the encoder and decoder.
-        codebook_size: The size of the codebook.
-        num_quantizers: The number of quantizers in the residual vector
-            quantization.
-        encoder_causal: Whether to use a causal encoder.
-        max_tsz: The maximum time dimension size.
+        num_mels: Number of input Mel spectrogram bins.
+        d_model: The hidden dimension of the model.
+        num_layers: Number of hidden layers in the decoder.
+        codebook_size: Number of codebook entries.
+        num_quantizers: Number of quantizers to use.
     """
 
-    __constants__ = ["codebook_size", "num_mels", "encoder_causal"]
+    __constants__ = ["codebook_size", "num_mels", "hifigan_key"]
 
     def __init__(
         self,
         num_mels: int,
         d_model: int,
-        nhead: int,
-        dim_feedforward: int,
         num_layers: int,
         codebook_size: int,
         num_quantizers: int,
         hifigan_key: PretrainedHiFiGANType,
-        encoder_causal: bool = False,
-        max_tsz: int = 2048,
     ) -> None:
         super().__init__()
 
         self.codebook_size = codebook_size
         self.num_mels = num_mels
-        self.encoder_causal = encoder_causal
         self.hifigan_key = hifigan_key
 
         self.rvq = ResidualVectorQuantization(
@@ -108,75 +206,8 @@ class MelCodec(nn.Module):
             num_quantizers=num_quantizers,
         )
 
-        self.embs = get_positional_embeddings(max_tsz, d_model, "rotary")
-        self.init_emb = nn.Parameter(torch.zeros(1, 1, d_model))
-
-        self.register_buffer("mask", nn.Transformer.generate_square_subsequent_mask(max_tsz), persistent=False)
-
-        self.encoder_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=0.0,
-                batch_first=True,
-                norm_first=True,
-            ),
-            num_layers=num_layers,
-        )
-
-        self.decoder_transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=nhead,
-                dim_feedforward=dim_feedforward,
-                dropout=0.0,
-                batch_first=True,
-                norm_first=True,
-            ),
-            num_layers=num_layers,
-        )
-
-        self.enc_in_proj = nn.Linear(num_mels, d_model)
-        self.dec_in_proj = nn.Linear(num_mels, d_model)
-        self.out_proj = nn.Linear(d_model, num_mels)
-
-    mask: Tensor
-
-    def _featurize(self, x: Tensor) -> Tensor:
-        x = self.enc_in_proj(x)
-        x = self.embs(x)
-        if self.encoder_causal:
-            x = self.encoder_transformer(x, mask=self.mask, is_causal=True)
-        else:
-            x = self.encoder_transformer(x, is_causal=False)
-        return x
-
-    def _train_from_codes(self, x_codes: Tensor, x_prev: Tensor) -> Tensor:
-        x_prev = self.dec_in_proj(x_prev[:, :-1])
-        x_prev = torch.cat([self.init_emb.repeat(x_prev.shape[0], 1, 1), x_prev], dim=1)
-        x = x_codes + x_prev
-        x = self.decoder_transformer(x, mask=self.mask, is_causal=True)
-        x = self.out_proj(x)
-        return x
-
-    def _infer_from_codes(self, x_codes: Tensor) -> Tensor:
-        init_emb = self.init_emb.repeat(x_codes.shape[0], 1, 1)
-        x_nb = init_emb
-        tsz = x_codes.shape[1]
-        for t in range(tsz):
-            x = x_codes[:, : x_nb.shape[1]] + x_nb
-            x = self.decoder_transformer(x, mask=self.mask, is_causal=True)
-            x = self.out_proj(x)
-            if t < tsz - 1:
-                x_nb = torch.cat([init_emb, self.dec_in_proj(x)], dim=1)
-        return x
-
-    def _pre_quant_to_tokens(self, xq: Tensor) -> Tensor:
-        return self.rvq.encode(xq.transpose(1, 2))
-
-    def _tokens_to_embedding(self, tokens: Tensor) -> Tensor:
-        return self.rvq.decode(tokens).transpose(1, 2)
+        self.encoder = Encoder(num_mels, d_model)
+        self.decoder = Decoder(num_mels, d_model, num_layers)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """Runs the forward pass of the model.
@@ -188,72 +219,53 @@ class MelCodec(nn.Module):
             The predicted next step of the Mel spectrogram, with shape
             ``(B, T, C)``, along with the codebook loss.
         """
-        xq = self._featurize(x).transpose(1, 2)
+        xq = self.encoder(x).transpose(1, 2)
         xq, _, codebook_loss, _ = self.rvq(xq)
-        x = self._train_from_codes(xq.transpose(1, 2), x)
+        x = self.decoder(xq.transpose(1, 2), x)
         return x, codebook_loss
 
     def infer(self, x: Tensor) -> Tensor:
-        xq = self._featurize(x).transpose(1, 2)
-        xq, _, _, _ = self.rvq(xq)
-        x = self._infer_from_codes(xq.transpose(1, 2))
-        return x
+        """Runs the inference pass, for evaluating model quality.
 
-    def encode(self, x: Tensor) -> Tensor:
-        """Converts a Mel spectrogram into a sequence of tokens.
+        This just converts the input mels to codes and then decodes them.
 
         Args:
             x: The input Mel spectrogram, with shape ``(B, T, C)``.
 
         Returns:
-            The sequence of tokens, with shape ``(N, B, T)``.
+            The predicted next step of the Mel spectrogram, with shape
+            ``(B, T, C)``,
         """
-        xq = self._featurize(x)
-        xq = self._pre_quant_to_tokens(xq)
-        return xq
-
-    def decode(self, tokens: Tensor) -> Tensor:
-        """Converts a sequence of tokens to a Mel spectrogram.
-
-        Args:
-            tokens: The sequence of tokens, with shape ``(N, B, T)``.
-
-        Returns:
-            The decoded Mel spectrogram, with shape ``(B, T, C)``.
-        """
-        xq = self._tokens_to_embedding(tokens)
-        x = self._infer_from_codes(xq)
+        xq = self.encoder(x).transpose(1, 2)
+        xq, _, _, _ = self.rvq(xq)
+        x, _ = self.decoder.infer(xq.transpose(1, 2))
         return x
 
+    @functools.cached_property
+    def hifigan(self) -> "HiFiGAN":
+        return pretrained_hifigan(self.hifigan_key)
+
     def quantizer(self) -> "MelCodecQuantizer":
-        return MelCodecQuantizer(self, pretrained_hifigan(self.hifigan_key))
+        return MelCodecQuantizer(self, self.hifigan)
 
     def dequantizer(self) -> "MelCodecDequantizer":
-        return MelCodecDequantizer(self, pretrained_hifigan(self.hifigan_key))
+        return MelCodecDequantizer(self, self.hifigan)
 
 
 class MelCodecQuantizer(nn.Module):
-    __constants__ = ["codebook_size", "num_mels", "encoder_causal"]
+    __constants__ = ["codebook_size", "num_mels"]
 
     def __init__(self, codec: MelCodec, hifigan: HiFiGAN) -> None:
         super().__init__()
 
         self.codebook_size = codec.codebook_size
         self.num_mels = codec.num_mels
-        self.encoder_causal = codec.encoder_causal
 
         # Copies the relevant attributes from the codec module.
         self.rvq = codec.rvq
-        self.embs = codec.embs
-        self.init_emb = codec.init_emb
-        self.encoder_transformer = codec.encoder_transformer
-        self.enc_in_proj = codec.enc_in_proj
-
-        self.register_buffer("mask", codec.mask)
+        self.encoder = codec.encoder
 
         self.mel_fn = hifigan.audio_to_mels()
-
-    mask: Tensor
 
     def _get_mels(self, audio: Tensor) -> Tensor:
         if audio.dim() == 3:
@@ -265,35 +277,31 @@ class MelCodecQuantizer(nn.Module):
         audio = audio / torch.maximum(audio_max, -audio_min).clamp_min(1e-2) * 0.999
         return self.mel_fn.wav_to_mels(audio.flatten(1)).transpose(1, 2)
 
-    def _featurize(self, x: Tensor) -> Tensor:
-        x = self.enc_in_proj(x)
-        x = self.embs(x)
-        if self.encoder_causal:
-            x = self.encoder_transformer(x, mask=self.mask, is_causal=True)
-        else:
-            x = self.encoder_transformer(x, is_causal=False)
-        return x
+    def _featurize(self, mels: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
+        return self.encoder(mels, state)
 
     def _pre_quant_to_tokens(self, xq: Tensor) -> Tensor:
         return self.rvq.encode(xq.transpose(1, 2))
 
-    def encode(self, audio: Tensor) -> Tensor:
+    def encode(self, audio: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
         """Converts a waveform to a set of tokens.
 
         Args:
             audio: The single-channel input waveform, with shape ``(B, T)``
                 This should be at 22050 Hz.
+            state: The encoder state from the previous step, if any.
 
         Returns:
-            The quantized tokens, with shape ``(N, B, Tq)``
+            The quantized tokens, with shape ``(N, B, Tq)``, along with the
+            updated encoder state.
         """
         mels = self._get_mels(audio)
-        xq = self._featurize(mels)
+        xq, state = self._featurize(mels, state)
         xq = self._pre_quant_to_tokens(xq)
-        return xq
+        return xq, state
 
-    def forward(self, audio: Tensor) -> Tensor:
-        return self.encode(audio)
+    def forward(self, audio: Tensor, state: EncoderState | None = None) -> tuple[Tensor, EncoderState]:
+        return self.encode(audio, state)
 
 
 class MelCodecDequantizer(nn.Module):
@@ -302,21 +310,13 @@ class MelCodecDequantizer(nn.Module):
 
         self.codebook_size = codec.codebook_size
         self.num_mels = codec.num_mels
-        self.encoder_causal = codec.encoder_causal
 
         # Copies the relevant attributes from the codec module.
         self.rvq = codec.rvq
-        self.embs = codec.embs
-        self.init_emb = codec.init_emb
-        self.decoder_transformer = codec.decoder_transformer
-        self.dec_in_proj = codec.dec_in_proj
-        self.out_proj = codec.out_proj
+        self.decoder = codec.decoder
 
-        self.register_buffer("mask", codec.mask)
-
+        # Stores the HiFiGAN model for converting from Mels back to audio.
         self.hifigan = hifigan
-
-    mask: Tensor
 
     def _get_audio(self, mels: Tensor) -> Tensor:
         return self.hifigan.infer(mels.transpose(1, 2)).squeeze(1)
@@ -324,94 +324,67 @@ class MelCodecDequantizer(nn.Module):
     def _tokens_to_embedding(self, tokens: Tensor) -> Tensor:
         return self.rvq.decode(tokens).transpose(1, 2)
 
-    def _infer_from_codes(self, x_codes: Tensor) -> Tensor:
-        init_emb = self.init_emb.repeat(x_codes.shape[0], 1, 1)
-        x_nb = init_emb
-        tsz = x_codes.shape[1]
-        for t in range(tsz):
-            x = x_codes[:, : x_nb.shape[1]] + x_nb
-            x = self.decoder_transformer(x, mask=self.mask, is_causal=True)
-            x = self.out_proj(x)
-            if t < tsz - 1:
-                x_nb = torch.cat([init_emb, self.dec_in_proj(x)], dim=1)
-        return x
+    def _infer_from_codes(self, codes: Tensor, state: RNNState | None = None) -> tuple[Tensor, RNNState]:
+        return self.decoder.infer(codes, state)
 
-    def decode(self, tokens: Tensor) -> Tensor:
+    def decode(self, tokens: Tensor, state: RNNState | None = None) -> tuple[Tensor, RNNState]:
         """Converts a set of tokens to a waveform.
 
         Args:
             tokens: The single-channel input tokens, with shape ``(N, B, Tq)``,
                 at 22050 Hz.
+            state: The decoder state from the previous step, if any.
 
         Returns:
-            The decoded waveform, with shape ``(B, T)``
+            The decoded waveform, with shape ``(B, T)``, along with the updated
+            decoder state.
         """
         xq = self._tokens_to_embedding(tokens)
-        x = self._infer_from_codes(xq)
-        return self._get_audio(x)
+        x, state = self._infer_from_codes(xq, state)
+        return self._get_audio(x), state
 
-    def forward(self, tokens: Tensor) -> Tensor:
+    def forward(self, tokens: Tensor, state: RNNState | None = None) -> tuple[Tensor, RNNState]:
         return self.decode(tokens)
 
 
 def _load_pretrained_mel_codec(
+    model: MelCodec,
     key: PretrainedMelCodecType,
     ckpt_url: str,
     sha256: str,
     load_weights: bool,
-    config: MelCodecConfig,
 ) -> MelCodec:
-    model = MelCodec(
-        num_mels=config.num_mels,
-        d_model=config.d_model,
-        dim_feedforward=config.dim_feedforward,
-        nhead=config.nhead,
-        num_layers=config.num_layers,
-        codebook_size=config.codebook_size,
-        num_quantizers=config.num_quantizers,
-        encoder_causal=config.encoder_causal,
-        hifigan_key=config.hifigan_key,
-    )
-
     if load_weights:
         model_fname = f"{key}.bin"
 
         with Timer("downloading checkpoint"):
-            model_path = ensure_downloaded(ckpt_url, "codec", model_fname, sha256=sha256)
+            model_path = ensure_downloaded(ckpt_url, "mel_codec", model_fname, sha256=sha256)
 
         with Timer("loading checkpoint", spinner=True):
-            ckpt = st.load_file(model_path)
+            ckpt = torch.load(model_path)
             model.load_state_dict(ckpt)
 
     return model
 
 
-def pretrained_mel_codec(
-    key: str | PretrainedMelCodecType,
-    load_weights: bool = True,
-    max_tsz: int = 2048,
-) -> MelCodec:
+def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool = True) -> MelCodec:
     key = cast_pretrained_mel_codec_type(key)
 
     match key:
-        case "librivox":
+        case "base":
             return _load_pretrained_mel_codec(
-                key,
-                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/librivox.bin",
-                sha256="7d884aebaf4ac1f56fb64191121a253a5f3446a1e4e68ad20ff94905158bdab3",
-                load_weights=load_weights,
-                config=MelCodecConfig(
-                    num_mels=80,
+                model=MelCodec(
+                    num_mels=128,
                     d_model=768,
-                    dim_feedforward=2048,
-                    nhead=12,
                     num_layers=3,
                     codebook_size=1024,
                     num_quantizers=8,
-                    encoder_causal=False,
-                    max_tsz=max_tsz,
-                    hifigan_key="22050hz",
+                    hifigan_key="16000hz",
                 ),
+                key=key,
+                ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/mels_base.bin",
+                sha256="3c5d2f945dec3b9e46e8a4ff153b6ec309be25178e5898867e3ffa85578a3a20",
+                load_weights=load_weights,
             )
 
         case _:
@@ -421,16 +394,18 @@ def pretrained_mel_codec(
 def test_codec_adhoc() -> None:
     configure_logging()
 
+    type_choices = list(get_args(PretrainedMelCodecType))
+
     parser = argparse.ArgumentParser(description="Runs adhoc test of the codec.")
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
+    parser.add_argument("-k", "--key", choices=type_choices, default=type_choices[0])
     args = parser.parse_args()
 
     dev = detect_device()
-    mul = 10 if dev._device.type == "cuda" else 1
 
     # Loads the pretrained model.
-    model = pretrained_mel_codec("librivox")
+    model = pretrained_mel_codec(args.key)
     quantizer, dequantizer = model.quantizer(), model.dequantizer()
     dev.module_to(quantizer)
     dev.module_to(dequantizer)
@@ -438,18 +413,27 @@ def test_codec_adhoc() -> None:
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
-    audio = audio[:, : sr * mul]
-    if sr != dequantizer.hifigan.sampling_rate:
-        audio = torchaudio.functional.resample(audio, sr, dequantizer.hifigan.sampling_rate)
+    audio = audio[:, : sr * 10]
+    tsr = dequantizer.hifigan.sampling_rate
+    if sr != tsr:
+        audio = torchaudio.functional.resample(audio, sr, tsr)
 
     # Note: This normalizes the audio to the range [-1, 1], which may increase
     # the volume of the audio if it is quiet.
     audio = audio / audio.abs().max() * 0.999
     audio = dev.tensor_to(audio)
 
-    # Runs the model.
-    tokens = quantizer(audio)
-    audio = dequantizer(tokens)
+    # Encodes the audio sequence to tokens.
+    encoder_state: EncoderState | None = None
+    for audio_chunk in spinnerator(audio.split(tsr * 3, dim=1), desc="Encoding"):
+        tokens, encoder_state = quantizer(audio, encoder_state)
+
+    # Decodes the tokens to audio.
+    audio_chunks: list[Tensor] = []
+    decoder_state: RNNState | None = None
+    for token_chunk in spinnerator(tokens.split(50, dim=-1), desc="Decoding"):
+        audio_chunk, decoder_state = dequantizer(token_chunk, decoder_state)
+        audio_chunks.append(audio_chunk)
 
     # Saves the audio.
     torchaudio.save(args.output_file, audio.cpu(), dequantizer.hifigan.sampling_rate)
