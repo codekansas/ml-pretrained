@@ -268,7 +268,7 @@ def pretrained_wav_codec(key: str | PretrainedWavCodecType, load_weights: bool =
                 ),
                 key=key,
                 ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/wavs_base.bin",
-                sha256="6bde4c577ea6477ead9e69780a17370712ce588d56df51c2184b2457671f5acf",
+                sha256="cba9fce581adf9246926a492343e79e3783490d489e7e40ef56e0749d2f29834",
                 load_weights=load_weights,
             )
 
@@ -285,11 +285,14 @@ def test_codec_adhoc() -> None:
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     parser.add_argument("-k", "--key", choices=type_choices, default=type_choices[0])
+    parser.add_argument("-m", "--max-seconds", type=int)
     args = parser.parse_args()
 
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
+    if args.max_seconds:
+        audio = audio[:, : sr * args.max_seconds]
     if sr != 16000:
         audio = torchaudio.functional.resample(audio, sr, 16000)
 

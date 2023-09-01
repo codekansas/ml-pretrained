@@ -383,7 +383,7 @@ def pretrained_mel_codec(key: str | PretrainedMelCodecType, load_weights: bool =
                 ),
                 key=key,
                 ckpt_url="https://huggingface.co/codekansas/codec/resolve/main/mels_base.bin",
-                sha256="3c5d2f945dec3b9e46e8a4ff153b6ec309be25178e5898867e3ffa85578a3a20",
+                sha256="1a693724fa59be9e6d113a5bbd10a6281583ed4c4779f9559dbc2f74166e8c28",
                 load_weights=load_weights,
             )
 
@@ -400,6 +400,7 @@ def test_codec_adhoc() -> None:
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
     parser.add_argument("-k", "--key", choices=type_choices, default=type_choices[0])
+    parser.add_argument("-m", "--max-seconds", type=int)
     args = parser.parse_args()
 
     dev = detect_device()
@@ -413,7 +414,8 @@ def test_codec_adhoc() -> None:
     # Loads the audio file.
     audio, sr = torchaudio.load(args.input_file)
     audio = audio[:1]
-    audio = audio[:, : sr * 10]
+    if args.max_seconds:
+        audio = audio[:, : sr * args.max_seconds]
     tsr = dequantizer.hifigan.sampling_rate
     if sr != tsr:
         audio = torchaudio.functional.resample(audio, sr, tsr)
