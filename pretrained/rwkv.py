@@ -574,12 +574,12 @@ class Attention(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.time_decay = nn.Parameter(torch.empty(dim))
-        self.time_first = nn.Parameter(torch.empty(dim))
+        self.time_decay = nn.Parameter(torch.ones(dim))
+        self.time_first = nn.Parameter(torch.ones(dim))
 
-        self.time_mix_k = nn.Parameter(torch.empty(1, 1, dim))
-        self.time_mix_v = nn.Parameter(torch.empty(1, 1, dim))
-        self.time_mix_r = nn.Parameter(torch.empty(1, 1, dim))
+        self.time_mix_k = nn.Parameter(torch.ones(1, 1, dim))
+        self.time_mix_v = nn.Parameter(torch.ones(1, 1, dim))
+        self.time_mix_r = nn.Parameter(torch.ones(1, 1, dim))
 
         if freeze:
             self.time_decay.requires_grad_(False)
@@ -646,8 +646,8 @@ class FeedForward(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.time_mix_k = nn.Parameter(torch.empty(1, 1, dim))
-        self.time_mix_r = nn.Parameter(torch.empty(1, 1, dim))
+        self.time_mix_k = nn.Parameter(torch.ones(1, 1, dim))
+        self.time_mix_r = nn.Parameter(torch.ones(1, 1, dim))
 
         if freeze:
             self.time_mix_k.requires_grad_(False)
