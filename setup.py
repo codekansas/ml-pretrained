@@ -31,7 +31,7 @@ setup(
         "Programming Language :: Python :: 3",
     ],
     python_requires=">=3.10",
-    install_requires=["ml-starter"],
+    install_requires=["ml-starter", "safetensors"],
     tests_require=["ml-starter[dev]"],
     extras_require={"dev": ["ml-starter[dev]"], "docs": ["ml-starter[docs]"]},
     package_data={"pretrained": ["py.typed"]},
