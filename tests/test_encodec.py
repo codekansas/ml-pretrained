@@ -13,7 +13,8 @@ def test_pretrained_encodec() -> None:
     tokens = encoder(waveform)
     reconstructed = decoder(tokens)
 
-    assert tokens.shape[:2] == (1, 32)
+    assert tokens.shape[0] == 1
+    assert tokens.shape[2] == 32
     assert reconstructed.shape == waveform.shape
 
     reconstructed_train, vq_losses = model(waveform)
