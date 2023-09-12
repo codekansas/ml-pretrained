@@ -653,7 +653,7 @@ def _load_pretrained_encodec(
         model_fname = f"{size}.bin"
 
         with Timer("downloading checkpoint"):
-            model_path = ensure_downloaded(ckpt_url, "hubert", model_fname, sha256=sha256)
+            model_path = ensure_downloaded(ckpt_url, "encodec", model_fname, sha256=sha256)
 
         def change_prefix(s: str, a: str, b: str) -> str:
             if s.startswith(a):
