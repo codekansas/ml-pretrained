@@ -528,14 +528,12 @@ def _encode(x: Tensor, encoder: SEANetEncoder, quantizer: ResidualVectorQuantiza
     _, channels, _ = x.shape
     assert channels > 0 and channels <= 2
     emb = encoder(x)
-    codes = quantizer.encode(emb)
-    codes = codes.transpose(0, 1)
+    codes = quantizer.encode(emb.transpose(1, 2))
     return codes
 
 
 def _decode(tokens: Tensor, decoder: SEANetDecoder, quantizer: ResidualVectorQuantization) -> Tensor:
-    codes = tokens.transpose(0, 1)
-    emb = quantizer.decode(codes)
+    emb = quantizer.decode(tokens).transpose(1, 2)
     out = decoder(emb)
     return out
 
@@ -586,9 +584,9 @@ class Encodec(nn.Module):
         return _decode(tokens, decoder=self.decoder, quantizer=self.quantizer)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        x = self.encoder(x)
+        x = self.encoder(x).transpose(1, 2)
         x, _, vq_losses, _ = self.quantizer(x)
-        x = self.decoder(x)
+        x = self.decoder(x.transpose(1, 2))
         return x, vq_losses
 
 
