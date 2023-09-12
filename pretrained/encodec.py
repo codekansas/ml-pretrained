@@ -671,10 +671,12 @@ def _load_pretrained_encodec(
 
 
 def pretrained_encodec(size: str | PretrainedEncodecSize, load_weights: bool = True) -> Encodec:
+    size = cast_pretrained_encodec_type(size)
+
     match size:
         case "24khz":
             return _load_pretrained_encodec(
-                cast_pretrained_encodec_type(size),
+                size,
                 ckpt_url="https://dl.fbaipublicfiles.com/encodec/v0/encodec_24khz-d7cc33bc.th",
                 sha256="d7cc33bcf1aad7f2dad9836f36431530744abeace3ca033005e3290ed4fa47bf",
                 config=EncodecConfig(
