@@ -747,6 +747,52 @@ class Block(nn.Module):
         return x, (att_state_out, ffn_state_out)
 
 
+class RwkvStack(nn.Module):
+    """Defines a stack of RWKV modules.
+
+    Parameters:
+        emb_dim: The number of embedding dimensions in each block
+        num_layers: The number of layers in the stack
+        use_checkpointing: Whether to use checkpointing
+        wkv_key: The WKV algorithm to use
+
+    Inputs:
+        x: The input tensor, with shape ``(B, T, D)``
+        state: The previous state
+
+    Outputs:
+        The output tensor, with shape ``(B, T, D)``, and the next state
+    """
+
+    def __init__(
+        self,
+        emb_dim: int,
+        num_layers: int,
+        use_checkpointing: bool = False,
+        wkv_key: WkvFnKey | None = None,
+    ) -> None:
+        super().__init__()
+
+        self.blocks = nn.ModuleList(
+            [
+                Block(
+                    emb_dim,
+                    pre_norm=i == 0,
+                    use_checkpointing=use_checkpointing,
+                    wkv_key=wkv_key,
+                )
+                for i in range(num_layers)
+            ]
+        )
+
+    def forward(self, x: Tensor, state: list[State] | None = None) -> tuple[Tensor, list[State]]:
+        state_out: list[State] = []
+        for i, block in enumerate(self.blocks):
+            x, state_out_i = block(x, None if state is None else state[i])
+            state_out.append(state_out_i)
+        return x, state_out
+
+
 class Rwkv(nn.Module):
     def __init__(
         self,
