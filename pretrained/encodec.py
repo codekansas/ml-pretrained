@@ -524,11 +524,16 @@ class SEANetDecoder(nn.Module):
         return y
 
 
-def _encode(x: Tensor, encoder: SEANetEncoder, quantizer: ResidualVectorQuantization) -> Tensor:
+def _encode(
+    x: Tensor,
+    encoder: SEANetEncoder,
+    quantizer: ResidualVectorQuantization,
+    n_q: int | None = None,
+) -> Tensor:
     _, channels, _ = x.shape
     assert channels > 0 and channels <= 2
     emb = encoder(x)
-    codes = quantizer.encode(emb.transpose(1, 2))
+    codes = quantizer.encode(emb.transpose(1, 2), n_q=n_q)
     return codes
 
 
@@ -577,8 +582,8 @@ class Encodec(nn.Module):
     def get_decoder(self) -> "Decoder":
         return Decoder(self)
 
-    def encode(self, waveform: Tensor) -> Tensor:
-        return _encode(waveform, encoder=self.encoder, quantizer=self.quantizer)
+    def encode(self, waveform: Tensor, n_q: int | None = None) -> Tensor:
+        return _encode(waveform, encoder=self.encoder, quantizer=self.quantizer, n_q=n_q)
 
     def decode(self, tokens: Tensor) -> Tensor:
         return _decode(tokens, decoder=self.decoder, quantizer=self.quantizer)
@@ -597,8 +602,8 @@ class Encoder(nn.Module):
         self.encoder = encodec.encoder
         self.quantizer = encodec.quantizer
 
-    def encode(self, waveform: Tensor) -> Tensor:
-        return _encode(waveform, encoder=self.encoder, quantizer=self.quantizer)
+    def encode(self, waveform: Tensor, n_q: int | None = None) -> Tensor:
+        return _encode(waveform, encoder=self.encoder, quantizer=self.quantizer, n_q=n_q)
 
     def forward(self, waveform: Tensor) -> Tensor:
         return self.encode(waveform)
@@ -697,6 +702,7 @@ def test_encodec_adhoc() -> None:
     parser.add_argument("size", type=str, choices=get_args(PretrainedEncodecSize))
     parser.add_argument("input_file", type=str, help="Path to input audio file")
     parser.add_argument("output_file", type=str, help="Path to output audio file")
+    parser.add_argument("-n", "--num-quantizers", type=int, help="Number of quantizers")
     args = parser.parse_args()
 
     # Loads the encoder and decoder.
@@ -711,7 +717,7 @@ def test_encodec_adhoc() -> None:
         sr = model.sample_rate
 
     # Runs the codec.
-    tokens = encoder.encode(audio)
+    tokens = encoder.encode(audio, n_q=args.num_quantizers)
     reconstructed_audio = decoder.decode(tokens)
 
     # Saves the audio.
