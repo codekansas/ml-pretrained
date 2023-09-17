@@ -324,7 +324,7 @@ class CausalHubert(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.hubert_pos_embs = get_positional_embeddings(max_tsz, hidden_size, "rotary")
+        self.hubert_pos_embs = get_positional_embeddings("rotary")
 
         self.extractor = extractor
         self.receptive_field_size = extractor.receptive_field_size

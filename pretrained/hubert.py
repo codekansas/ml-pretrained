@@ -605,7 +605,7 @@ class HubertEncoderStableLayerNorm(nn.Module):
 
 
 class Hubert(nn.Module):
-    __constants__ = ["conv_kernel", "conv_stride"]
+    __constants__ = ["conv_kernel", "conv_stride", "pre_normalize", "hidden_size"]
 
     def __init__(
         self,
@@ -635,6 +635,7 @@ class Hubert(nn.Module):
         self.conv_kernel = conv_kernel
         self.conv_stride = conv_stride
         self.pre_normalize = pre_normalize
+        self.hidden_size = hidden_size
 
         self.feature_extractor = HubertFeatureEncoder(
             conv_dim=conv_dim,
