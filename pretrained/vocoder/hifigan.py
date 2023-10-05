@@ -10,9 +10,9 @@ synthesize audio.
     vocoder = pretrained_vocoder("hifigan")
 """
 
-import math
 import argparse
 import logging
+import math
 from typing import Literal, cast, get_args
 
 import numpy as np
