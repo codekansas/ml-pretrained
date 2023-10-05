@@ -10,6 +10,7 @@ synthesize audio.
     vocoder = pretrained_vocoder("hifigan")
 """
 
+import math
 import argparse
 import logging
 from typing import Literal, cast, get_args
@@ -172,7 +173,6 @@ class HiFiGAN(nn.Module):
     Parameters:
         sampling_rate: The sampling rate of the model.
         model_in_dim: The input dimension of the model.
-        hop_size: The hop size of the model.
         upsample_kernel_sizes: The kernel sizes of the upsampling layers.
         upsample_rates: The upsample rates of each layer.
         resblock_kernel_sizes: The kernel sizes of the ResBlocks.
@@ -185,7 +185,6 @@ class HiFiGAN(nn.Module):
         self,
         sampling_rate: int,
         model_in_dim: int,
-        hop_size: int,
         upsample_kernel_sizes: list[int],
         upsample_rates: list[int],
         resblock_kernel_sizes: list[int] = [3, 7, 11],
@@ -197,7 +196,7 @@ class HiFiGAN(nn.Module):
 
         self.model_in_dim = model_in_dim
         self.sampling_rate = sampling_rate
-        self.hop_size = hop_size
+        self.hop_size = math.prod(upsample_rates)
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
         self.lrelu_slope = lrelu_slope
@@ -335,7 +334,6 @@ def pretrained_hifigan(
                 model = HiFiGAN(
                     sampling_rate=16000,
                     model_in_dim=128,
-                    hop_size=160,
                     upsample_kernel_sizes=[20, 8, 4, 4],
                     upsample_rates=[10, 4, 2, 2],
                 )
@@ -346,7 +344,6 @@ def pretrained_hifigan(
                 model = HiFiGAN(
                     sampling_rate=22050,
                     model_in_dim=80,
-                    hop_size=256,
                     upsample_kernel_sizes=[16, 16, 4, 4],
                     upsample_rates=[8, 8, 2, 2],
                 )
@@ -372,7 +369,6 @@ class AudioToHifiGanMels(nn.Module):
         num_mels: The number of mel bins.
         n_fft: The number of FFT bins.
         win_size: The window size.
-        hop_size: The hop size.
         fmin: The minimum frequency.
         fmax: The maximum frequency.
     """
