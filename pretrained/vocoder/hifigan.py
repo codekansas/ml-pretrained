@@ -228,7 +228,7 @@ class HiFiGAN(nn.Module):
         self.conv_post.apply(init_hifigan_weights)
 
     def forward(self, x: Tensor, state: HiFiGANState | None = None) -> tuple[Tensor, HiFiGANState]:
-        x, pre_s = self.conv_pre.forward(x, get(state, 0))
+        x, pre_s = self.conv_pre(x, get(state, 0))
         up_s_in = get(state, 1)
         up_s_out: list[StreamingConvState] = []
         down_s_in = get(state, 2)
@@ -237,7 +237,7 @@ class HiFiGAN(nn.Module):
         sa_out: list[list[StreamingAddState]] = []
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.lrelu_slope)
-            x, up_s = up.forward(x, get(up_s_in, i))
+            x, up_s = up(x, get(up_s_in, i))
             up_s_out.append(up_s)
             xs = None
             down_s_in_i = get(down_s_in, i)
@@ -247,7 +247,7 @@ class HiFiGAN(nn.Module):
             for j in range(self.num_kernels):
                 down_s_in_ij = get(down_s_in_i, j)
                 sa_in_ij = get(sa_in_i, j - 1)
-                xs_i, down_s_out_ij = self.resblocks[i * self.num_kernels + j].forward(x, down_s_in_ij)
+                xs_i, down_s_out_ij = self.resblocks[i * self.num_kernels + j](x, down_s_in_ij)
                 if xs is None:
                     xs = xs_i
                 else:
@@ -259,13 +259,13 @@ class HiFiGAN(nn.Module):
             assert xs is not None
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
-        x, post_s = self.conv_post.forward(x, get(state, 4))
+        x, post_s = self.conv_post(x, get(state, 4))
         x = torch.tanh(x)
 
         return x, (pre_s, up_s_out, down_s_out, sa_out, post_s)
 
     def infer(self, x: Tensor) -> Tensor:
-        y, _ = self.forward(x)
+        y, _ = self(x)
         return y
 
     def remove_weight_norm(self) -> None:
