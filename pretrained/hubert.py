@@ -52,6 +52,7 @@ from ml.utils.device.base import base_device
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
 from torch import Tensor, nn
+from torch.nn.utils.parametrizations import weight_norm
 
 PretrainedHubertSize = Literal["base", "large", "extra_large"]
 
@@ -130,7 +131,7 @@ class PositionalConvEmbedding(nn.Module):
             groups=num_conv_pos_embedding_groups,
         )
 
-        self.conv = nn.utils.weight_norm(conv, dim=2)
+        self.conv = weight_norm(conv, dim=2)
         self.padding = HubertSamePadLayer(num_conv_pos_embeddings)
         self.activation = get_activation(feat_extract_activation)
 
@@ -143,9 +144,6 @@ class PositionalConvEmbedding(nn.Module):
 
         hidden_states = hidden_states.transpose(1, 2)
         return hidden_states
-
-    def remove_weight_norm_(self) -> None:
-        self.conv = nn.utils.remove_weight_norm(self.conv)
 
 
 class Attention(nn.Module):
@@ -325,9 +323,6 @@ class HubertEncoder(nn.Module):
             if output_layer is not None and i == output_layer:
                 break
         return all_layer_hidden_states
-
-    def remove_weight_norm_(self) -> None:
-        self.pos_conv_embed.remove_weight_norm_()
 
 
 class GroupNormConvLayer(nn.Module):
@@ -600,9 +595,6 @@ class HubertEncoderStableLayerNorm(nn.Module):
                 break
         return all_layers_hidden_states
 
-    def remove_weight_norm_(self) -> None:
-        self.pos_conv_embed.remove_weight_norm_()
-
 
 class Hubert(nn.Module):
     __constants__ = ["conv_kernel", "conv_stride", "pre_normalize", "hidden_size"]
@@ -730,10 +722,6 @@ class Hubert(nn.Module):
     ) -> "HubertPredictor":
         return HubertPredictor(self, kmeans, device=device)
 
-    def remove_weight_norm_(self) -> None:
-        assert isinstance(self.encoder, (HubertEncoderStableLayerNorm, HubertEncoder))
-        self.encoder.remove_weight_norm_()
-
 
 class HubertPredictor:
     def __init__(
@@ -756,9 +744,6 @@ class HubertPredictor:
                 device returned by detect_device().
         """
         super().__init__()
-
-        # Remove weight norm for inference, if it exists.
-        hubert_model.remove_weight_norm_()
 
         self.device = detect_device() if device is None else device
         self.model = hubert_model.eval()
