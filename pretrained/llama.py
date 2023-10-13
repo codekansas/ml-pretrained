@@ -1,3 +1,4 @@
+# mypy: disable-error-code="import-not-found"
 """Defines a simple API for using Meta's pretrained LLaMa model.
 
 This code is adapted from the original implementation
@@ -266,8 +267,7 @@ class Tokenizer:
         assert model_path.is_file(), f"Tokenizer model file not found at {model_path}"
 
         try:
-            from sentencepiece import SentencePieceProcessor  # type: ignore[import-not-found]
-
+            from sentencepiece import SentencePieceProcessor
         except ImportError:
             raise ImportError("Please install sentencepiece with: `pip install sentencepiece`")
 

@@ -396,7 +396,7 @@ class AudioToHifiGanMels(nn.Module):
         self.fmax = fmax
 
         # try:
-        #     from librosa.filters import mel as librosa_mel_fn  # type: ignore[import]
+        #     from librosa.filters import mel as librosa_mel_fn
         # except ImportError:
         #     raise ImportError("Please install librosa to use AudioToHifiGanMels")
 
