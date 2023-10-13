@@ -1,4 +1,4 @@
-# mypy: disable-error-code="import-not-found"
+# mypy: disable-error-code="import-not-found,import-untyped"
 """Defines a pre-trained Tacotron2 model.
 
 This combines a Tacotron2 model with a HiFiGAN vocoder to produce an
