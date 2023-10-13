@@ -1,4 +1,4 @@
-# mypy: disable-error-code="import"
+# mypy: disable-error-code="import-not-found"
 """Defines a pre-trained Tacotron2 model.
 
 This combines a Tacotron2 model with a HiFiGAN vocoder to produce an
@@ -1409,7 +1409,10 @@ def test_tacotron_adhoc() -> None:
             audio, _ = tts.generate(text, postnet=True)
 
             if args.out_file is None:
-                import sounddevice as sd  # type: ignore[import-not-found]
+                try:
+                    import sounddevice as sd
+                except ImportError:
+                    raise ImportError("Please install sounddevice to use this module: pip install sounddevice")
 
                 audio = audio.cpu().numpy().T
                 sd.play(audio, tts.sampling_rate, blocking=True)

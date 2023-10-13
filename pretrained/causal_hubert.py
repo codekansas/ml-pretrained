@@ -1,3 +1,4 @@
+# mypy: disable-error-code="import-not-found"
 """Defines an API for interacting with a causal HuBERT model.
 
 This model is trained to predict HuBERT tokens from the previous N audio
@@ -594,7 +595,10 @@ def test_causal_hubert() -> None:
     predictor = model.predictor()
     state: CausalHubertState | None = None
 
-    import sounddevice as sd  # type: ignore[import-not-found]
+    try:
+        import sounddevice as sd
+    except ImportError:
+        raise ImportError("Please install sounddevice to use this module: pip install sounddevice")
 
     with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
         sys.stdout.write("Codes:\n")
