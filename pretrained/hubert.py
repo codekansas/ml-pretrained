@@ -1089,48 +1089,51 @@ def pretrained_kmeans_clusters(size: PretrainedHubertKmeansSize) -> KMeans:
             raise NotImplementedError(f"Invalid size: {size}")
 
 
-def pretrained_hubert_with_kmeans(size: PretrainedHubertKmeansSize) -> tuple[Hubert, KMeans]:
+def pretrained_hubert_with_kmeans(
+    size: PretrainedHubertKmeansSize,
+    load_weights: bool = True,
+) -> tuple[Hubert, KMeans]:
     kmeans = pretrained_kmeans_clusters(size)
 
     match size:
         case "base-l7-c100":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(7)
             return hubert, kmeans
         case "base-l7-c200":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(7)
             return hubert, kmeans
         case "base-l7-c500":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(7)
             return hubert, kmeans
         case "base-l7-c1000":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(7)
             return hubert, kmeans
         case "base-l8-c100":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(8)
             return hubert, kmeans
         case "base-l8-c200":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(8)
             return hubert, kmeans
         case "base-l8-c500":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(8)
             return hubert, kmeans
         case "base-l8-c1000":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(8)
             return hubert, kmeans
         case "base-l10-c100":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(10)
             return hubert, kmeans
         case "base-l10-c200":
-            hubert = pretrained_hubert("base")
+            hubert = pretrained_hubert("base", load_weights=load_weights)
             hubert.set_output_layer(10)
             return hubert, kmeans
         case _:
