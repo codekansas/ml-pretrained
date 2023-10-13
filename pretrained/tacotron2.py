@@ -1409,10 +1409,7 @@ def test_tacotron_adhoc() -> None:
             audio, _ = tts.generate(text, postnet=True)
 
             if args.out_file is None:
-                try:
-                    import sounddevice as sd
-                except ImportError:
-                    raise ImportError("Please install sounddevice to play audio: pip install sounddevice")
+                import sounddevice as sd  # type: ignore[import-not-found]
 
                 audio = audio.cpu().numpy().T
                 sd.play(audio, tts.sampling_rate, blocking=True)

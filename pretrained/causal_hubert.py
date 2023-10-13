@@ -594,7 +594,7 @@ def test_causal_hubert() -> None:
     predictor = model.predictor()
     state: CausalHubertState | None = None
 
-    import sounddevice as sd  # type: ignore[import]
+    import sounddevice as sd  # type: ignore[import-not-found]
 
     with sd.InputStream(samplerate=16000, channels=1, dtype="float32") as stream:
         sys.stdout.write("Codes:\n")

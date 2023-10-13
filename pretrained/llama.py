@@ -266,7 +266,7 @@ class Tokenizer:
         assert model_path.is_file(), f"Tokenizer model file not found at {model_path}"
 
         try:
-            from sentencepiece import SentencePieceProcessor  # type: ignore[import]
+            from sentencepiece import SentencePieceProcessor  # type: ignore[import-not-found]
 
         except ImportError:
             raise ImportError("Please install sentencepiece with: `pip install sentencepiece`")
