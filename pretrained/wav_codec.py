@@ -22,8 +22,8 @@ from typing import Literal, cast, get_args
 import torch
 import torch.nn.functional as F
 import torchaudio
-from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
 from ml.models.modules import StreamingConv1d
+from ml.models.quantization.vq import ResidualVectorQuantization, VectorQuantization
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.device.auto import detect_device
 from ml.utils.logging import configure_logging
