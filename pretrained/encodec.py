@@ -30,8 +30,8 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 from ml.models.activations import ActivationType, get_activation
-from ml.models.codebook import ResidualVectorQuantization, VectorQuantization
 from ml.models.norms import NormType, ParametrizationNormType, get_norm_1d, get_parametrization_norm
+from ml.models.quantization.vq import ResidualVectorQuantization, VectorQuantization
 from ml.utils.checkpoint import ensure_downloaded
 from ml.utils.logging import configure_logging
 from ml.utils.timer import Timer
